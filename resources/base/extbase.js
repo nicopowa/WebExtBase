@@ -343,8 +343,8 @@ class BackgroundPort extends PortBase {
 	/**
 	* @method toWeb: send message to web script
 	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
+	* @param {string} type: message type
+	* @param {Object} message: message content
 	* @param {Function} callback: 
 	*/
 	toWeb(tabid, type, message, callback) {
