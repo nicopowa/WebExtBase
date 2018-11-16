@@ -329,8 +329,8 @@ class BackgroundPort extends PortBase {
 	
 	/**
 	* @method toContentAll: send message to all handled content scripts
-	* @param {string} type: 
-	* @param {Object} message: 
+	* @param {string} type: message type
+	* @param {Object} message: message content
 	* @param {Function} callback: 
 	*/
 	toContentAll(type, message, callback) {
