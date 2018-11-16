@@ -1,0 +1,3 @@
+# WebExtBase
+
+base web extension
