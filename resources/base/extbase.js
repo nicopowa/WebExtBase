@@ -361,8 +361,8 @@ class BackgroundPort extends PortBase {
 	
 	/**
 	* @method toPopup: send message to popup script
-	* @param {string} type: 
-	* @param {Object} message: 
+	* @param {string} type: message type
+	* @param {Object} message: message content
 	* @param {Function} callback: 
 	*/
 	toPopup(type, message, callback) {
