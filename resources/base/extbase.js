@@ -381,7 +381,7 @@ class BackgroundPort extends PortBase {
 	* @method fromContent: received message from content script
 	* @param {number} tabid: 
 	* @param {string} type: message type
-	* @param {Object} message: 
+	* @param {Object} message: message content
 	* @param {Function} callback: 
 	*/
 	fromContent(tabid, type, message, callback) {
