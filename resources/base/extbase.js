@@ -1412,6 +1412,16 @@ class ContentMessage extends MessageBase {
 */
 class WebMessage extends MessageBase {
 	
+	/**
+	* @constructor
+	* @param {String} extid: Chrome extension identifier
+	* @param {Function} onConnect: 
+	* @param {Function} onBackgroundMessage: 
+	* @param {Function} onContentMessage: 
+	* @param {Function} onWebMessage: 
+	* @param {Function} onPopupMessage: 
+	*
+	*/
 	constructor(extid, onConnect, onBackgroundMessage, onContentMessage, onWebMessage, onPopupMessage) {
 		super();
 		
