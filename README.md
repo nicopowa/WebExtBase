@@ -1,4 +1,4 @@
-#WebExtBase
+# WebExtBase
 Nico Pr
 https://nicopr.fr/chromextensions
 
@@ -8,44 +8,44 @@ install :
 	- copy extension ID from extensions page
 	- paste extension ID in [ExtensionDir]/resources/web.js : line 10
 
-Communications between background / content / web / popup scripts :
+###Communications between background / content / web / popup scripts :
 	
-	There are two ways to communicate : runtime and ports
-	
-		runtime communications : messages are sent using chrome.runtime.sendMessage, chrome.tabs.sendMessage, window.postMessage
-		port communications : messages are sent through Port objects and relayed by the background script
-		
-		
-	This project aims to unify runtime and port messaging
+There are two ways to communicate : runtime and ports
+
+	runtime communications : messages are sent using chrome.runtime.sendMessage, chrome.tabs.sendMessage, window.postMessage
+	port communications : messages are sent through Port objects and relayed by the background script
 	
 	
-	port messaging is pretty simple : all messages piped through background script
+This project aims to unify runtime and port messaging
 
-	runtime messaging is ugly, and may be UNSTABLE
 
-	Background :
-		- can send to content via chrome.tabs
-		- cannot send to web (window.postMessage)
-			send through content (chrome.tabs > window.postMessage)
-		- can send to popup via chrome.runtime
+port messaging is pretty simple : all messages piped through background script
 
-	Content :
-		- can send to background via chrome.runtime
-		- can send to web via window.postMessage
-			same tab only, send to other web script through background > content > window.postMessage
-		- can send to popup via chrome.runtime
+runtime messaging is ugly, and may be UNSTABLE
 
-	Web :
-		- can send to background via chrome.runtime
-		- cannot send to content (chrome.tabs)
-			send through background (chrome.runtime > chrome.tabs)
-		- can send to popup via chrome.runtime
+Background :
+	- can send to content via chrome.tabs
+	- cannot send to web (window.postMessage)
+		send through content (chrome.tabs > window.postMessage)
+	- can send to popup via chrome.runtime
 
-	Popup :
-		- can send to background via chrome.runtime
-		- can send to content via chrome.tabs
-		- cannot send to web (window.postMessage)
-			send through content (chrome.tabs > window.postMessage)
+Content :
+	- can send to background via chrome.runtime
+	- can send to web via window.postMessage
+		same tab only, send to other web script through background > content > window.postMessage
+	- can send to popup via chrome.runtime
+
+Web :
+	- can send to background via chrome.runtime
+	- cannot send to content (chrome.tabs)
+		send through background (chrome.runtime > chrome.tabs)
+	- can send to popup via chrome.runtime
+
+Popup :
+	- can send to background via chrome.runtime
+	- can send to content via chrome.tabs
+	- cannot send to web (window.postMessage)
+		send through content (chrome.tabs > window.postMessage)
 			
 			
 #How it works		
@@ -106,6 +106,6 @@ Communications between background / content / web / popup scripts :
 							}
 	
 	> fromBackground fromContent fromWeb fromPopup
-	receive methods MUST return true if async callback is needed !
-	if return false the callback will be fired synchronously with null result
+	**receive methods MUST return true if async callback is needed !**
+	**if return false the callback will be fired synchronously with null result**
 	if callback is not needed, pass the message without callback arg
