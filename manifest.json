@@ -43,9 +43,7 @@
 			
 			//"resources/extension.min.js" // closure compiled
 			
-		],
-		
-		"persistent": true
+		]
 		
 	},
 

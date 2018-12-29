@@ -1,8 +1,12 @@
+
 # WebExtBase
 
-Nico Pr
-
 https://nicopr.fr/chromextensions
+
+https://developer.chrome.com/extensions
+
+WebExtension toolkit for Chromium-based browsers
+Firefox compat is coming soon, there will be a few differences.
 
 install :
 

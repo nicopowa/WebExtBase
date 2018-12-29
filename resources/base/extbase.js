@@ -6,6 +6,8 @@
 
 const DEBUG = true; // true = verbose, false = be quiet + removes every line "if(DEBUG) trace || console.log" while compiling with closure
 
+const which = (typeof chrome === "undefined") ? (typeof browser === "undefined") ? null : browser : chrome;
+
 const COMM_MESSAGE = 0;
 const COMM_PORT = 1;
 
@@ -70,6 +72,7 @@ class PortBase {
 class BackgroundPort extends PortBase {
 	
 	/**
+	* @constructor
 	* @param {Function} onConnect: new port connected function(infos{name, tabid})
 	* @param {Function} onDisconnect: port disconnected function(infos{name, tabid})
 	* @param {Function} onContentMessage: message from content port
@@ -90,9 +93,9 @@ class BackgroundPort extends PortBase {
 		this.popupPort = null;
 		
 		this.portConnectHandler = this.onPortConnect.bind(this);
-		chrome.runtime.onConnect.addListener(this.portConnectHandler);
+		which.runtime.onConnect.addListener(this.portConnectHandler);
 		this.externalPortConnectHandler = this.onExternalPortConnect.bind(this);
-		chrome.runtime.onConnectExternal.addListener(this.externalPortConnectHandler);
+		which.runtime.onConnectExternal.addListener(this.externalPortConnectHandler);
 	}
 	
 	/**
@@ -101,7 +104,7 @@ class BackgroundPort extends PortBase {
 	*/
 	onPortConnect(port) {
 		
-		if(port["sender"]["id"] != chrome.runtime.id) {
+		if(port["sender"]["id"] != which.runtime.id) {
 			if(DEBUG) trace("extension", port["sender"]["id"], "not allowed"); // other exts not allowed to send port messages
 			port.disconnect();
 			return;
@@ -349,7 +352,7 @@ class ContentPort extends PortBase {
 		
 		this.tabid = 0;
 		
-		this.port = chrome.runtime.connect({name: "content"});
+		this.port = which.runtime.connect({name: "content"});
 		this.portMessageHandler = this.onPortMessage.bind(this);
 		this.port.onMessage.addListener(this.portMessageHandler);
 	}
@@ -523,7 +526,7 @@ class WebPort extends PortBase {
 		
 		this.tabid = 0;
 		
-		this.port = chrome.runtime.connect(this.extid, {name: "web"});
+		this.port = which.runtime.connect(this.extid, {name: "web"});
 		this.portMessageHandler = this.onPortMessage.bind(this);
 		this.port.onMessage.addListener(this.portMessageHandler);
 	}
@@ -684,7 +687,7 @@ class PopupPort extends PortBase {
 		this.onContentMessage = onContentMessage || die;
 		this.onWebMessage = onWebMessage || die;
 		
-		this.port = chrome.runtime.connect({name: "popup"});
+		this.port = which.runtime.connect({name: "popup"});
 		this.portMessageHandler = this.onPortMessage.bind(this);
 		this.port.onMessage.addListener(this.portMessageHandler);
 	}
@@ -812,14 +815,14 @@ class MessageBase {
 	toPopup(type, message, callback) {}
 	
 	/**
-	* @method toruntime: send message to chrome runtime
+	* @method toruntime: send message to browser runtime
 	* @param {string} extid: 
 	* @param {Object} message: 
 	* @param {Function} callback: 
 	*/
 	toruntime(extid, message, callback) {
 		callback = callback || die;
-		chrome.runtime.sendMessage(extid, message, this.callbackLayer.apply(this, Array.prototype.slice.call(arguments).slice(2)));
+		which.runtime.sendMessage(extid, message, this.callbackLayer.apply(this, Array.prototype.slice.call(arguments).slice(2)));
 	}
 	
 	/**
@@ -830,7 +833,7 @@ class MessageBase {
 	*/
 	totab(tabid, message, callback) {
 		callback = callback || die;
-		chrome.tabs.sendMessage(tabid, message, this.callbackLayer.apply(this, Array.prototype.slice.call(arguments).slice(2)));
+		which.tabs.sendMessage(tabid, message, this.callbackLayer.apply(this, Array.prototype.slice.call(arguments).slice(2)));
 	}
 	
 	/**
@@ -838,11 +841,11 @@ class MessageBase {
 	* @param {Object} message: 
 	*/
 	towindow(message) {
-		window.postMessage(message, window.location.toString());
+		return window.postMessage(message, window.location.toString());
 	}
 	
 	/**
-	* @method callback: allow user to pass any number of arguments to the async chrome callback executed after sending a message
+	* @method callback: allow user to pass any number of arguments to the async chrome callback triggered after sending a message
 	* @param {Function} callback: 
 	*/
 	callbackLayer(callback) { // callback + any number of args
@@ -899,10 +902,10 @@ class BackgroundMessage extends MessageBase {
 		this.onPopupMessage = onPopupMessage;
 		
 		this.messageHandler = this.onMessage.bind(this);
-		chrome.runtime.onMessage.addListener(this.messageHandler);
+		which.runtime.onMessage.addListener(this.messageHandler);
 		
 		this.externalMessageHandler = this.onMessageExternal.bind(this);
-		chrome.runtime.onMessageExternal.addListener(this.externalMessageHandler);
+		which.runtime.onMessageExternal.addListener(this.externalMessageHandler);
 		
 	}
 	
@@ -915,7 +918,7 @@ class BackgroundMessage extends MessageBase {
 	*/
 	onMessage(message, sender, callback) {
 		//if(DEBUG) trace(message);
-		if(chrome.runtime.id != sender["id"]) return; // other exts not allowed to send messages !!
+		if(which.runtime.id != sender["id"]) return; // other exts not allowed to send messages !!
 		switch(message["dst"]) {
 			
 			case SCRIPT_BACKGROUND:
@@ -1117,7 +1120,7 @@ class ContentMessage extends MessageBase {
 		this.onHandle = onHandle;
 		
 		this.messageHandler = this.onMessage.bind(this);
-		chrome.runtime.onMessage.addListener(this.messageHandler);
+		which.runtime.onMessage.addListener(this.messageHandler);
 		
 		this.toBackground("ehlo", {}, this.helo.bind(this));
 	}
@@ -1140,7 +1143,7 @@ class ContentMessage extends MessageBase {
 	* @this {ContentMessage}
 	*/
 	onMessage(message, sender, callback) {
-		if(chrome.runtime.id != sender.id) return; // other exts not allowed to send messages !!
+		if(which.runtime.id != sender.id) return; // other exts not allowed to send messages !!
 		
 		switch(message["dst"]) {
 			
@@ -1150,16 +1153,14 @@ class ContentMessage extends MessageBase {
 				else if(message["src"] == SCRIPT_CONTENT) return this.fromContent(message["ftab"], message["type"], message["msg"], callback);
 				else if(message["src"] == SCRIPT_WEB) return this.fromWeb(message["ftab"], message["type"], message["msg"], callback);
 				else if(message["src"] == SCRIPT_POPUP) return this.fromPopup(message["type"], message["msg"], callback);
-				//else trace("FAIL content message ", message);
 				break;
 			
 			case SCRIPT_WEB:
-				this.towindow({"src": message["src"], "dst": SCRIPT_WEB, "type": message["type"], "msg": message["msg"], "ack": message["ack"]});
+				return this.towindow({"src": message["src"], "dst": SCRIPT_WEB, "type": message["type"], "msg": message["msg"], "ack": message["ack"]});
 				break;
 		}
 		
-		
-		return false; // RETURN TRUE TO ENABLE ASYNC CALLBACK
+		return false; // unhandled, no async callback
 	}
 	
 	/**
@@ -1326,7 +1327,6 @@ class WebMessage extends MessageBase {
 	* @param {Function} onContentMessage: 
 	* @param {Function} onWebMessage: 
 	* @param {Function} onPopupMessage: 
-	*
 	*/
 	constructor(extid, onConnect, onBackgroundMessage, onContentMessage, onWebMessage, onPopupMessage) {
 		super();
@@ -1358,7 +1358,6 @@ class WebMessage extends MessageBase {
 		else if(event["data"]["src"] == SCRIPT_CONTENT) this.fromContent(event["data"]["ftab"], event["data"]["type"], event["data"]["msg"], this.callback(event["data"]["ack"], event["data"]["src"], event["data"]["ftab"]));
 		else if(event["data"]["src"] == SCRIPT_WEB) this.fromWeb(event["data"]["ftab"], event["data"]["type"], event["data"]["msg"], this.callback(event["data"]["ack"], event["data"]["src"], event["data"]["ftab"]));
 		else if(event["data"]["src"] == SCRIPT_POPUP) this.fromPopup(event["data"]["type"], event["data"]["msg"], this.callback(event["data"]["ack"], event["data"]["src"]));
-		//else trace("FAIL web post message ", event["data"]);
 	}
 	
 	/**
@@ -1530,7 +1529,7 @@ class PopupMessage extends MessageBase {
 		this.onWebMessage = onWebMessage;
 		
 		this.messageHandler = this.onMessage.bind(this);
-		chrome.runtime.onMessage.addListener(this.messageHandler);
+		which.runtime.onMessage.addListener(this.messageHandler);
 		
 		this.toBackground("ehlo", {}, this.ehlo.bind(this));
 	}
@@ -1548,7 +1547,7 @@ class PopupMessage extends MessageBase {
 	*/
 	onMessage(message, sender, callback) {
 		//trace(message);
-		if(chrome.runtime.id != sender.id) return;
+		if(which.runtime.id != sender.id) return;
 		if(message["type"] == "ack") return this.callbacks.get(message["msg"]["ack"])["callback"].apply(this, [message["msg"]["result"]].concat(this.callbacks.get(message["msg"]["ack"])["args"]));
 		if(message["dst"] == SCRIPT_POPUP && message["src"] == SCRIPT_BACKGROUND) return this.fromBackground(message["type"], message["msg"], callback);
 		else if(message["dst"] == SCRIPT_POPUP && message["src"] == SCRIPT_CONTENT) return this.fromContent(sender["tab"]["id"], message["type"], message["msg"], callback);
@@ -1688,7 +1687,7 @@ class ExtensionScript { // don't touch or call
 	* @param {Function} callback: 
 	*/
 	static store(key, value, callback) {
-		chrome.storage.sync.set({[key]: value}, callback);
+		which.storage.sync.set({[key]: value}, callback);
 	}
 	
 	/**
@@ -1698,7 +1697,7 @@ class ExtensionScript { // don't touch or call
 	*/
 	static restore(keys, callback) {
 		if(!(keys instanceof Array)) keys = [keys];
-		chrome.storage.sync.get(keys, callback);
+		which.storage.sync.get(keys, callback);
 	}
 	
 }
@@ -1717,16 +1716,16 @@ class ExtensionBackgroundScript extends ExtensionScript {
 		super.initialize();
 		
 		this.installHandler = this.onInstall.bind(this);
-		chrome.runtime.onInstalled.addListener(this.installHandler);
+		which.runtime.onInstalled.addListener(this.installHandler);
 		
 		this.startupHandler = this.onStartup.bind(this);
-		chrome.runtime.onStartup.addListener(this.startupHandler);
+		which.runtime.onStartup.addListener(this.startupHandler);
 		
 		this.closeTabHandler = this.onCloseTab.bind(this);
-		chrome.tabs.onRemoved.addListener(this.closeTabHandler);
+		which.tabs.onRemoved.addListener(this.closeTabHandler);
 		
 		this.tabUpdateHandler = this.onTabUpdate.bind(this);
-		chrome.tabs.onUpdated.addListener(this.tabUpdateHandler);
+		which.tabs.onUpdated.addListener(this.tabUpdateHandler);
 		
 		this.tabs = new Map();
 		
@@ -1939,13 +1938,13 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	* @param {Function} callback: 
 	*/
 	static activeTab(callback) {
-		chrome.tabs.query({"active": true, "currentWindow": true}, function(tabs) {
+		which.tabs.query({"active": true, "currentWindow": true}, function(tabs) {
 			callback(tabs[0]);
 		});
 	}
 	
 	static updateTab(tabid, updateInfos, callback) {
-		chrome.tabs.update(tabid, updateInfos, callback);
+		which.tabs.update(tabid, updateInfos, callback);
 	}
 	
 	
@@ -1953,7 +1952,7 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	
 	
 	static createWindow(url, x, y, width, height, callback) {
-		chrome.windows.create({
+		which.windows.create({
 			"url": url,
 			"left": x,
 			"top": y,
@@ -1968,23 +1967,23 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	}
 	
 	static updateWindow(windowId, updateInfo, callback) {
-		chrome.windows.update(windowId, updateInfo, callback);
+		which.windows.update(windowId, updateInfo, callback);
 	}
 	
 	static closeWindow(windowId, callback) {
-		chrome.windows.remove(windowId, callback);
+		which.windows.remove(windowId, callback);
 	}
 	
 	static allWindows(callback) {
-		chrome.windows.getAll({"populate": true, "windowTypes": ["popup"]}, callback);
+		which.windows.getAll({"populate": true, "windowTypes": ["popup"]}, callback);
 	}
 	
 	static setBadgeText(text, callback) {
-		chrome.browserAction.setBadgeText({"text": text}, callback);
+		which.browserAction.setBadgeText({"text": text}, callback);
 	}
 	
 	static setBadgeColor(color, callback) {
-		chrome.browserAction.setBadgeBackgroundColor({"color": color}, callback);
+		which.browserAction.setBadgeBackgroundColor({"color": color}, callback);
 	}
 	
 	/**
@@ -2006,7 +2005,7 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	}
 	
 	static reloadTab(tabid, callback) {
-		chrome.tabs.reload(tabid, {"bypassCache": false}, callback);
+		which.tabs.reload(tabid, {"bypassCache": false}, callback);
 	}
 	
 	/**
@@ -2017,11 +2016,11 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	* @param {Function} callback: 
 	*/
 	static exec(tabid, code, callback) {
-		chrome.tabs.executeScript(tabid, {"code": code}, callback);
+		which.tabs.executeScript(tabid, {"code": code}, callback);
 	}
 	
 	static download(options, callback) {
-		chrome.downloads.download(options, callback)
+		which.downloads.download(options, callback)
 	}
 }
 
@@ -2076,7 +2075,7 @@ class ExtensionContentScript extends ExtensionScript {
 		
 		function doLoad(script) {
 			if(DEBUG) trace("load script : " + script);
-			let url = chrome.extension.getURL("resources/" + script);
+			let url = which.extension.getURL("resources/" + script);
 			let scr = document.createElement("script");
 			scr.async = 1;
 			document.head.appendChild(/** @type {!Element} */(scr));
@@ -2357,7 +2356,7 @@ class ExtensionPopupScript extends ExtensionScript {
 * @param {...*} var_args
 */
 function merge(var_args) {
-	return Object.assign.apply(null, Array.prototype.slice.call(arguments));
+	return Object.assign.apply(this, Array.prototype.slice.call(arguments));
 }
 
 /**
@@ -2395,7 +2394,7 @@ function whereami() {
 	else {
 		return "CONTENT";
 	}*/
-	return (chrome && chrome.extension && chrome.extension.getBackgroundPage ? (chrome.extension.getBackgroundPage() === window ? "background" : "popup") : (!chrome || !chrome.runtime || !chrome.runtime.onMessage ? "web" : "content")); // lol 1-liner
+	return (which && which.extension && which.extension.getBackgroundPage ? (which.extension.getBackgroundPage() === window ? "background" : "popup") : (!which || !which.runtime || !which.runtime.onMessage ? "web" : "content")); // lol 1-liner
 }
 
 /**
