@@ -6,1698 +6,62 @@
 
 const DEBUG = true; // true = verbose, false = be quiet + removes every line "if(DEBUG) trace || console.log" while compiling with closure
 
-const which = (typeof chrome === "undefined") ? (typeof browser === "undefined") ? null : browser : chrome;
 
-const COMM_MESSAGE = 0;
-const COMM_PORT = 1;
-
-const COMM_TYPE = COMM_PORT; // choose COMM_PORT || COMM_MESSAGE
-
-const SCRIPT_BACKGROUND = 0;
-const SCRIPT_CONTENT = 1;
-const SCRIPT_POPUP = 2;
-const SCRIPT_WEB = 3;
-
-/**
-* @nocollapse
-*/
-class PortBase {
-	
-	constructor() {
-		this.acks = 0;
-		this.callbacks = new Map();
-	}
-	
-	toBackground(type, message, callback) {}
-	
-	toContent(tabid, type, message, callback) {}
-	
-	toWeb(tabid, type, message, callback) {}
-	
-	toPopup(type, message, callback) {}
-	
-	/**
-	* @method ack: new ack number for async callback
-	* @param {Function} callback: method called when async ack is received
-	* @param {...*} var_args: overloads
-	*/
-	ack(callback, var_args) {
-		this.callbacks.set(++this.acks, {"callback": callback || die, "args": Array.prototype.slice.call(arguments).slice(1)});
-		return this.acks;
-	}
-	
-	/**
-	* @method callback: callback linked to ack number and origin script
-	* @param {number} ack: ack number
-	* @param {number} script: script origin
-	* @param {number=} tabid: if script origin is content or web, tabid is needed
-	* @param {...*} var_args: overloads
-	*/
-	callback(ack, script, tabid, var_args) {
-		return function(result) {
-			let params = {"ack": ack, "result": result};
-			if(script == SCRIPT_BACKGROUND) return this.toBackground("ack", params, die);
-			else if(script == SCRIPT_CONTENT) return this.toContent(tabid, "ack", params, die);
-			else if(script == SCRIPT_WEB) return this.toWeb(tabid, "ack", params, die);
-			else if(script == SCRIPT_POPUP) return this.toPopup("ack", params, die);
-		}.bind(this);
-	}
-	
-}
-
-/**
-* @nocollapse
-* @extends {PortBase}
-*/
-class BackgroundPort extends PortBase {
-	
-	/**
-	* @constructor
-	* @param {Function} onConnect: new port connected function(infos{name, tabid})
-	* @param {Function} onDisconnect: port disconnected function(infos{name, tabid})
-	* @param {Function} onContentMessage: message from content port
-	* @param {Function} onWebMessage: message from web port
-	* @param {Function} onPopupMessage: message from popup port
-	*/
-	constructor(onConnect, onDisconnect, onContentMessage, onWebMessage, onPopupMessage) {
-		super();
-		
-		this.onConnect = onConnect || die;
-		this.onDisconnect = onDisconnect || die;
-		this.onContentMessage = onContentMessage || die;
-		this.onWebMessage = onWebMessage || die;
-		this.onPopupMessage = onPopupMessage || die;
-		
-		this.contentPorts = new Map();
-		this.webPorts = new Map();
-		this.popupPort = null;
-		
-		this.portConnectHandler = this.onPortConnect.bind(this);
-		which.runtime.onConnect.addListener(this.portConnectHandler);
-		this.externalPortConnectHandler = this.onExternalPortConnect.bind(this);
-		which.runtime.onConnectExternal.addListener(this.externalPortConnectHandler);
-	}
-	
-	/**
-	* @method onPortConnect: port is connected
-	* @param port: connected port object
-	*/
-	onPortConnect(port) {
-		
-		if(port["sender"]["id"] != which.runtime.id) {
-			if(DEBUG) trace("extension", port["sender"]["id"], "not allowed"); // other exts not allowed to send port messages
-			port.disconnect();
-			return;
-		}
-		
-		if(DEBUG) trace(port.name, "port connected");
-		
-		let infos = {"name": port["name"]};
-
-		switch(port["name"]) {
-			
-			case "content":
-				this.contentPorts.set(port["sender"]["tab"]["id"], port);
-				this.toContent(port["sender"]["tab"]["id"], "tabid", port["sender"]["tab"]["id"], die);
-				infos["tab"] = port["sender"]["tab"]["id"];
-				this.toContentAll("handle", port["sender"]["tab"]["id"], die); // notify other content scripts
-				break;
-				
-			case "popup":
-				this.popupPort = port;
-				break;
-				
-			default:
-				if(DEBUG) return trace("unknown port", port);
-				break;
-			
-		}
-		
-		port.onMessage.addListener(this.onPortMessage.bind(this));
-		port.onDisconnect.addListener(this.onPortDisconnect.bind(this));
-		
-		this.onConnect(infos);
-	}
-	
-	/**
-	* @method onExternalPortConnect: external port is connected
-	* @param port: connected port object
-	*/
-	onExternalPortConnect(port) {
-		// external port, no check sender, website authorized in manifest "externally_connectable" // TODO : CHECK DOCS SECURITY
-		if(DEBUG) trace(port.name, "port connected");
-		
-		let infos = {"name": port["name"]};
-
-		switch(port["name"]) {
-				
-			case "web":
-				this.webPorts.set(port["sender"]["tab"]["id"], port);
-				this.toWeb(port["sender"]["tab"]["id"], "tabid", port["sender"]["tab"]["id"], die);
-				infos["tab"] = port["sender"]["tab"]["id"];
-				break;
-			
-		}
-		
-		port.onMessage.addListener(this.onPortMessage.bind(this));
-		port.onDisconnect.addListener(this.onPortDisconnect.bind(this));
-		
-		this.onConnect(infos);
-	}
-	
-	/**
-	* @method onPortMessage: message from port
-	* @param {Object} message: data received from port
-	*/
-	onPortMessage(message) {
-		//if(DEBUG) trace("port message :", message);
-		switch(message["dst"]) {
-			
-			case SCRIPT_BACKGROUND:
-				if(message["type"] == "ack") return this.callbacks.get(message["msg"]["ack"])["callback"].apply(this, [message["msg"]["result"]].concat(this.callbacks.get(message["msg"]["ack"])["args"]));
-				else if(message["src"] == SCRIPT_CONTENT) return this.fromContent(message["ftab"], message["type"], message["msg"], this.callback(message["ack"], message["src"], message["ftab"]));
-				else if(message["src"] == SCRIPT_WEB) return this.fromWeb(message["ftab"], message["type"], message["msg"], this.callback(message["ack"], message["src"], message["ftab"]));
-				else if(message["src"] == SCRIPT_POPUP) return this.fromPopup(message["type"], message["msg"], this.callback(message["ack"], message["src"]));
-				//else trace("FAIL background port message ", message);
-				break;				
-				
-			case SCRIPT_CONTENT:
-				if(this.contentPorts.has(message["ttab"])) this.contentPorts.get(message["ttab"]).postMessage(message);
-				//else trace("no tab", message["ttab"], message["msg"]);
-				break;
-				
-			case SCRIPT_WEB:
-				if(this.webPorts.has(message["ttab"])) this.webPorts.get(message["ttab"]).postMessage(message);
-				//else trace("no tab", message["ttab"], message["msg"]);
-				break;
-				
-			case SCRIPT_POPUP:
-				if(this.popupPort !== null) this.popupPort.postMessage(message);
-				//else trace("no popup");
-				break;
-				
-		}
-		
-	}
-	
-	/**
-	* @method onPortDisconnect: port is disconnected
-	* @param port: disconnected port
-	*/
-	onPortDisconnect(port) {
-		if(DEBUG) trace("port disconnected", port["name"]);
-		
-		let infos = {"name": port["name"]};
-		
-		if(port["name"] == "content") this.contentPorts.delete(port["sender"]["tab"]["id"]);
-		else if(port["name"] == "web") this.webPorts.delete(port["sender"]["tab"]["id"]);
-		else if(port["name"] == "popup") this.popupPort = null;
-		
-		this.onDisconnect(infos);
-	}
-	
-	/**
-	* @method toContent: send a message to content script
-	* @param {number} tabid: which tab
-	* @param {string} type: message type
-	* @param {Object} message: data
-	* @param {Function} callback: executed 
-	* @this {BackgroundPort}
-	*/
-	toContent(tabid, type, message, callback) {
-		if(this.contentPorts.has(tabid)) this.contentPorts.get(tabid).postMessage(
-			{
-				"src": SCRIPT_BACKGROUND, 
-				"dst": SCRIPT_CONTENT, 
-				"type": type, 
-				"msg": message, 
-				"ack": this.ack.apply(this, Array.prototype.slice.call(arguments).slice(3))
-			}
-		);
-	}
-	
-	/**
-	* @method toContentAll: send message to all handled content scripts
-	* @param {string} type: message type
-	* @param {Object} message: message content
-	* @param {Function} callback: 
-	*/
-	toContentAll(type, message, callback) {
-		let args = Array.prototype.slice.call(arguments);
-		this.contentPorts.forEach(function(port, tabid) {
-			this.toContent.apply(this, [tabid].concat(args));
-		}.bind(this));
-	}
-	
-	/**
-	* @method toWeb: send message to web script
-	* @param {number} tabid: 
-	* @param {string} type: message type
-	* @param {Object} message: message content
-	* @param {Function} callback: 
-	*/
-	toWeb(tabid, type, message, callback) {
-		if(this.webPorts.has(tabid)) this.webPorts.get(tabid).postMessage(
-			{
-				"src": SCRIPT_BACKGROUND, 
-				"dst": SCRIPT_WEB, 
-				"type": type, 
-				"msg": message, 
-				"ack": this.ack.apply(this, Array.prototype.slice.call(arguments).slice(3))
-			}
-		);
-	}
-	
-	/**
-	* @method toPopup: send message to popup script
-	* @param {string} type: message type
-	* @param {Object} message: message content
-	* @param {Function} callback: 
-	*/
-	toPopup(type, message, callback) {
-		if(this.popupPort !== null) this.popupPort.postMessage(
-			{
-				"src": SCRIPT_BACKGROUND, 
-				"dst": SCRIPT_POPUP, 
-				"type": type, 
-				"msg": message, 
-				"ack": this.ack.apply(this, Array.prototype.slice.call(arguments).slice(2))
-			}
-		);
-	}
-	
-	/**
-	* @method fromContent: received message from content script
-	* @param {number} tabid: 
-	* @param {string} type: message type
-	* @param {Object} message: message content
-	* @param {Function} callback: 
-	*/
-	fromContent(tabid, type, message, callback) {
-		//if(DEBUG) trace(type, "from content :", message);
-		if(this.onContentMessage(tabid, type, message, callback)) {}
-		else callback();
-	}
-	
-	/**
-	* @method fromWeb: received message from web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromWeb(tabid, type, message, callback) {
-		//if(DEBUG) trace(type, "from web :", message);
-		if(this.onWebMessage(tabid, type, message, callback)) {}
-		else callback();
-	}
-	
-	/**
-	* @method fromPopup: received message from popup script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromPopup(type, message, callback) {
-		//if(DEBUG) trace(type, "from popup :", message);
-		if(this.onPopupMessage(type, message, callback)) {}
-		else callback();
-	}
-	
-}
-
-/**
-* @nocollapse
-* @extends {PortBase}
-*/
-class ContentPort extends PortBase {
-	
-	/**
-	* @param {Function} onConnect: connected to background port
-	* @param {Function} onBackgroundMessage: message from background port
-	* @param {Function} onContentMessage: message from content port
-	* @param {Function} onWebMessage: message from web port
-	* @param {Function} onPopupMessage: message from popup port
-	* @param {Function} onHandle: new tab handled by extension
-	*/
-	constructor(onConnect, onBackgroundMessage, onContentMessage, onWebMessage, onPopupMessage, onHandle) {
-		super();
-		
-		this.onConnect = onConnect || die;
-		this.onBackgroundMessage = onBackgroundMessage || die;
-		this.onContentMessage = onContentMessage || die;
-		this.onWebMessage = onWebMessage || die;
-		this.onPopupMessage = onPopupMessage || die;
-		this.onHandle = onHandle || die;
-		
-		this.tabid = 0;
-		
-		this.port = which.runtime.connect({name: "content"});
-		this.portMessageHandler = this.onPortMessage.bind(this);
-		this.port.onMessage.addListener(this.portMessageHandler);
-	}
-	
-	/**
-	* @method onPortMessage: message from port
-	* @param {Object} message: 
-	*/
-	onPortMessage(message) {
-		//if(DEBUG) trace("content port message :", message);
-		if(message["type"] == "ack") return this.callbacks.get(message["msg"]["ack"])["callback"].apply(this, [message["msg"]["result"]].concat(this.callbacks.get(message["msg"]["ack"])["args"]));
-		else if(message["src"] == SCRIPT_BACKGROUND) this.fromBackground(message["type"], message["msg"], this.callback(message["ack"], message["src"]));
-		else if(message["src"] == SCRIPT_CONTENT) this.fromContent(message["ftab"], message["type"], message["msg"], this.callback(message["ack"], message["src"], message["ftab"]));
-		else if(message["src"] == SCRIPT_WEB) this.fromWeb(message["ftab"], message["type"], message["msg"], this.callback(message["ack"], message["src"], message["ftab"]));
-		else if(message["src"] == SCRIPT_POPUP) this.fromPopup(message["type"], message["msg"], this.callback(message["ack"], message["src"]));
-		//else trace("FAIL content port message ", message);
-	}
-	
-	/**
-	* @method toPort: sed a message to port
-	* @param {number} target: 
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	toPort(target, tabid, type, message, callback) {
-		this.port.postMessage(
-			{
-				"src": SCRIPT_CONTENT, 
-				"dst": target, 
-				"type": type, 
-				"msg": message, 
-				"ftab": this.tabid, 
-				"ttab": tabid, 
-				"ack": this.ack.apply(this, Array.prototype.slice.call(arguments).slice(4))
-			}
-		);
-	}
-	
-	/**
-	* @method toBackground: send a message to background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {ContentPort}
-	*/
-	toBackground(type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_BACKGROUND, this.tabid].concat(Array.prototype.slice.call(arguments)));
-	}
-	
-	/**
-	* @method toContent: send a message to content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {ContentPort}
-	*/
-	toContent(tabid, type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_CONTENT, tabid].concat(Array.prototype.slice.call(arguments).slice(1)));
-	}
-	
-	/**
-	* @method toWeb: send a message to web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	toWeb(tabid, type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_WEB, tabid].concat(Array.prototype.slice.call(arguments).slice(1)));
-	}
-	
-	toPopup(type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_POPUP, this.tabid].concat(Array.prototype.slice.call(arguments)));
-	}
-	
-	/**
-	* @method fromBackground: received message from background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromBackground(type, message, callback) {
-		//if(DEBUG) trace(type, "from background :", message);
-		
-		switch(type) {
-			
-			case "tabid":
-				this.tabid = message;
-				this.onConnect(this.tabid);
-				return false;
-				break;
-				
-			case "handle":
-				this.onHandle(message);
-				return false;
-				break;
-			
-		}
-		
-		if(this.onBackgroundMessage(type, message, callback)) {}
-		else callback();
-	}
-	
-	/**
-	* @method fromContent: received message from content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromContent(tabid, type, message, callback) {
-		//if(DEBUG) trace(type, "from web :", message, "tab", tabid);
-		if(this.onContentMessage(tabid, type, message, callback)) {}
-		else callback();
-	}
-	
-	/**
-	* @method fromWeb: received message from web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromWeb(tabid, type, message, callback) {
-		//if(DEBUG) trace(type, "from web :", message, "tab", tabid);
-		if(this.onWebMessage(tabid, type, message, callback)) {}
-		else callback();
-	}
-	
-	/**
-	* @method fromPopup: received message from popup script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromPopup(type, message, callback) {
-		//if(DEBUG) trace(type, "from popup :", message);
-		if(this.onPopupMessage(type, message, callback)) {}
-		else callback();
-	}
-	
-}
-
-/**
-* @nocollapse
-* @extends {PortBase}
-*/
-class WebPort extends PortBase {
-	
-	/**
-	* @param {string} extid: extension unique id
-	* @param {Function} onConnect: connected to background port
-	* @param {Function} onBackgroundMessage: message from background port
-	* @param {Function} onContentMessage: message from content port
-	* @param {Function} onWebMessage: message from web port
-	* @param {Function} onPopupMessage: message from popup port
-	*/
-	constructor(extid, onConnect, onBackgroundMessage, onContentMessage, onWebMessage, onPopupMessage) {
-		super();
-		
-		this.extid = extid;
-		
-		this.onConnect = onConnect || die;
-		this.onBackgroundMessage = onBackgroundMessage || die;
-		this.onContentMessage = onContentMessage || die;
-		this.onWebMessage = onWebMessage || die;
-		this.onPopupMessage = onPopupMessage || die;
-		
-		this.tabid = 0;
-		
-		this.port = which.runtime.connect(this.extid, {name: "web"});
-		this.portMessageHandler = this.onPortMessage.bind(this);
-		this.port.onMessage.addListener(this.portMessageHandler);
-	}
-	
-	/**
-	* @method onPortMessage: message from port
-	* @param {Object} message: 
-	*/
-	onPortMessage(message) {
-		//if(DEBUG) trace("web port message :", message);
-		if(message["type"] == "ack") return this.callbacks.get(message["msg"]["ack"])["callback"].apply(this, [message["msg"]["result"]].concat(this.callbacks.get(message["msg"]["ack"])["args"]));
-		else if(message["src"] == SCRIPT_BACKGROUND) this.fromBackground(message["type"], message["msg"], this.callback(message["ack"], message["src"]));
-		else if(message["src"] == SCRIPT_CONTENT) this.fromContent(message["ftab"], message["type"], message["msg"], this.callback(message["ack"], message["src"], message["ftab"]));
-		else if(message["src"] == SCRIPT_WEB) this.fromWeb(message["ftab"], message["type"], message["msg"], this.callback(message["ack"], message["src"], message["ftab"]));
-		else if(message["src"] == SCRIPT_POPUP) this.fromPopup(message["type"], message["msg"], this.callback(message["ack"], message["src"]));
-		//else trace("FAIL web port message ", message);
-	}
-	
-	/**
-	* @method toPort: sed a message to port
-	* @param {number} target: 
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	toPort(target, tabid, type, message, callback) {
-		this.port.postMessage(
-			{
-				"src": SCRIPT_WEB, 
-				"dst": target, 
-				"type": type, 
-				"msg": message, 
-				"ftab": this.tabid, 
-				"ttab": tabid, 
-				"ack": this.ack.apply(this, Array.prototype.slice.call(arguments).slice(4))
-			}
-		);
-	}
-	
-	/**
-	* @method toBackground: send a message to background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {WebPort}
-	*/
-	toBackground(type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_BACKGROUND, this.tabid].concat(Array.prototype.slice.call(arguments)));
-	}
-	
-	/**
-	* @method toContent: send a message to content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {WebPort}
-	*/
-	toContent(tabid, type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_CONTENT, tabid].concat(Array.prototype.slice.call(arguments).slice(1)));
-	}
-	
-	/**
-	* @method toWeb: send a message to web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	toWeb(tabid, type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_WEB, tabid].concat(Array.prototype.slice.call(arguments).slice(1)));
-	}
-	
-	toPopup(type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_POPUP, this.tabid].concat(Array.prototype.slice.call(arguments)));
-	}
-	
-	/**
-	* @method fromBackground: received message from background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromBackground(type, message, callback) {
-		//if(DEBUG) trace(type, "from background :", message);
-		switch(type) {
-			
-			case "tabid":
-				this.tabid = message;
-				this.onConnect(this.tabid);
-				return false;
-				break;
-			
-		}
-		
-		if(this.onBackgroundMessage(type, message, callback)) {}
-		else callback();
-	}
-	
-	/**
-	* @method fromContent: received message from content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromContent(tabid, type, message, callback) {
-		//if(DEBUG) trace(type, "from content :", message, "tab", tabid);
-		if(this.onContentMessage(tabid, type, message, callback)) {}
-		else callback();
-	}
-	
-	/**
-	* @method fromWeb: received message from web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromWeb(tabid, type, message, callback) {
-		//if(DEBUG) trace(type, "from web :", message, "tab", tabid);
-		if(this.onWebMessage(tabid, type, message, callback)) {}
-		else callback();
-	}
-	
-	/**
-	* @method fromPopup: received message from popup script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromPopup(type, message, callback) {
-		//if(DEBUG) trace(type, "from popup :", message);
-		if(this.onPopupMessage(type, message, callback)) {}
-		else callback();
-	}
-	
-}
-
-/**
-* @nocollapse
-* @extends {PortBase}
-*/
-class PopupPort extends PortBase {
-	
-	/**
-	* @param {Function} onConnect: connected to background port
-	* @param {Function} onBackgroundMessage: message from background port
-	* @param {Function} onContentMessage: message from content port
-	* @param {Function} onWebMessage: message from web port
-	*/
-	constructor(onConnect, onBackgroundMessage, onContentMessage, onWebMessage) {
-		super();
-		
-		this.onConnect = onConnect || die;
-		this.onBackgroundMessage = onBackgroundMessage || die;
-		this.onContentMessage = onContentMessage || die;
-		this.onWebMessage = onWebMessage || die;
-		
-		this.port = which.runtime.connect({name: "popup"});
-		this.portMessageHandler = this.onPortMessage.bind(this);
-		this.port.onMessage.addListener(this.portMessageHandler);
-	}
-	
-	/**
-	* @method onPortMessage: message from port
-	* @param {Object} message: 
-	*/
-	onPortMessage(message) {
-		//if(DEBUG) trace("port message :", message);
-		if(message["type"] == "ack") return this.callbacks.get(message["msg"]["ack"])["callback"].apply(this, [message["msg"]["result"]].concat(this.callbacks.get(message["msg"]["ack"])["args"]));
-		else if(message["src"] == SCRIPT_BACKGROUND) this.fromBackground(message["type"], message["msg"], this.callback(message["ack"], message["src"]));
-		else if(message["src"] == SCRIPT_CONTENT) this.fromContent(message["ftab"], message["type"], message["msg"], this.callback(message["ack"], message["src"], message["ftab"]));
-		else if(message["src"] == SCRIPT_WEB) this.fromWeb(message["ftab"], message["type"], message["msg"], this.callback(message["ack"], message["src"], message["ftab"]));
-		//else trace("FAIL popup port message ", message);
-	}
-	
-	/**
-	* @method toPort: sed a message to port
-	* @param {number} target: 
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	toPort(target, tabid, type, message, callback) {
-		this.port.postMessage(
-			{
-				"src": SCRIPT_POPUP, 
-				"dst": target, 
-				"type": type, 
-				"msg": message, 
-				"ftab": 0, 
-				"ttab": tabid, 
-				"ack": this.ack.apply(this, Array.prototype.slice.call(arguments).slice(4))
-			}
-		);
-	}
-	
-	/**
-	* @method toBackground: send a message to background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {PopupPort}
-	*/
-	toBackground(type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_BACKGROUND, 0].concat(Array.prototype.slice.call(arguments)));
-	}
-	
-	/**
-	* @method toContent: send a message to content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {PopupPort}
-	*/
-	toContent(tabid, type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_CONTENT, tabid].concat(Array.prototype.slice.call(arguments).slice(1)));
-	}
-	
-	toWeb(tabid, type, message, callback) {
-		this.toPort.apply(this, [SCRIPT_WEB, tabid].concat(Array.prototype.slice.call(arguments).slice(1)));
-	}
-	
-	/**
-	* @method fromBackground: received message from background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromBackground(type, message, callback) {
-		//if(DEBUG) trace(type, "from background :", message);
-		if(this.onBackgroundMessage(type, message, callback)) {}
-		else callback();
-	}
-	
-	/**
-	* @method fromContent: received message from content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromContent(tabid, type, message, callback) {
-		//if(DEBUG) trace(type, "from content :", message, "tab", tabid);
-		if(this.onContentMessage(tabid, type, message, callback)) {}
-		else callback();
-	}
-	
-	/**
-	* @method fromWeb: received message from web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	fromWeb(tabid, type, message, callback) {
-		//if(DEBUG) trace(type, "from web :", message, "tab", tabid);
-		if(this.onWebMessage(tabid, type, message, callback)) {}
-		else callback();
-	}
-	
-}
-
-/**
-* @nocollapse
-*/
-class MessageBase {
-	
-	constructor() {
-		
-		this.acks = 0;
-		this.callbacks = new Map();
-		
-	}
-	
-	toBackground(type, message, callback) {}
-	
-	toContent(tabid, type, message, callback) {}
-	
-	toWeb(tabid, type, message, callback) {}
-	
-	toPopup(type, message, callback) {}
-	
-	/**
-	* @method toruntime: send message to browser runtime
-	* @param {string} extid: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	toruntime(extid, message, callback) {
-		callback = callback || die;
-		which.runtime.sendMessage(extid, message, this.callbackLayer.apply(this, Array.prototype.slice.call(arguments).slice(2)));
-	}
-	
-	/**
-	* @method toruntime: send message to a tab
-	* @param {number} tabid: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	*/
-	totab(tabid, message, callback) {
-		callback = callback || die;
-		which.tabs.sendMessage(tabid, message, this.callbackLayer.apply(this, Array.prototype.slice.call(arguments).slice(2)));
-	}
-	
-	/**
-	* @method towindow: post message to window
-	* @param {Object} message: 
-	*/
-	towindow(message) {
-		return window.postMessage(message, window.location.toString());
-	}
-	
-	/**
-	* @method callback: allow user to pass any number of arguments to the async chrome callback triggered after sending a message
-	* @param {Function} callback: 
-	*/
-	callbackLayer(callback) { // callback + any number of args
-		let args = Array.prototype.slice.call(arguments); // keep ref for anonym nested method
-		callback = callback || die; // or die
-		return function(result) { // from chrome.tabs.sendMessage / chrome.runtime.sendMessage
-			callback.apply(this, [result].concat(args.slice(1))); // exec callback(chromeResult, arg, ...)
-		};
-	}
-	
-	/**
-	* @method ack: new ack number for async callback
-	* @param {Function} callback: method called when async ack is received
-	* @param {...*} var_args
-	*/
-	ack(callback, var_args) {
-		this.callbacks.set(++this.acks, {"callback": callback || die, "args": Array.prototype.slice.call(arguments).slice(1)});
-		return this.acks;
-	}
-	
-	/**
-	* @method callback: callback linked to ack number and origin script
-	* @param {number} ack: ack number
-	* @param {number} script: script origin
-	* @param {number=} tabid: if script origin is content or web, tabid is needed
-	* @param {...*} var_args
-	*/
-	callback(ack, script, tabid, var_args) {
-		return function(result) {
-			let params = {"ack": ack, "result": result};
-			if(script == SCRIPT_BACKGROUND) return this.toBackground("ack", params, die);
-			else if(script == SCRIPT_CONTENT) return this.toContent(tabid, "ack", params, die);
-			else if(script == SCRIPT_WEB) return this.toWeb(tabid, "ack", params, die);
-			else if(script == SCRIPT_POPUP) return this.toPopup("ack", params, die);
-		}.bind(this);
-	}
-	
-}
-
-/**
-* @nocollapse
-* @extends {MessageBase}
-*/
-class BackgroundMessage extends MessageBase {
-	
-	constructor(onConnect, onContentMessage, onWebMessage, onPopupMessage) {
-		super();
-		
-		if(DEBUG) trace("init background message");
-		
-		this.onConnect = onConnect;
-		this.onContentMessage = onContentMessage;
-		this.onWebMessage = onWebMessage;
-		this.onPopupMessage = onPopupMessage;
-		
-		this.messageHandler = this.onMessage.bind(this);
-		which.runtime.onMessage.addListener(this.messageHandler);
-		
-		this.externalMessageHandler = this.onMessageExternal.bind(this);
-		which.runtime.onMessageExternal.addListener(this.externalMessageHandler);
-		
-	}
-	
-	/**
-	* @method onMessage: received message
-	* @param {Object} message: 
-	* @param sender: 
-	* @param {Function} callback: 
-	* @this {BackgroundMessage}
-	*/
-	onMessage(message, sender, callback) {
-		//if(DEBUG) trace(message);
-		if(which.runtime.id != sender["id"]) return; // other exts not allowed to send messages !!
-		switch(message["dst"]) {
-			
-			case SCRIPT_BACKGROUND:
-				if(message["type"] == "ack") return this.callbacks.get(message["msg"]["ack"])["callback"].apply(this, [message["msg"]["result"]].concat(this.callbacks.get(message["msg"]["ack"])["args"]));
-				else if(message["src"] == SCRIPT_CONTENT) return this.fromContent(sender["tab"]["id"], message["type"], message["msg"], callback);
-				else if(message["src"] == SCRIPT_POPUP) return this.fromPopup(message["type"], message["msg"], callback);
-				break;
-				
-		}
-		return false; // RETURN TRUE TO ENABLE ASYNC CALLBACK
-	}
-	
-	onMessageExternal(message, sender, callback) {
-		//if(DEBUG) trace("external message", message);
-		
-		switch(message["dst"]) {
-			
-			case SCRIPT_BACKGROUND:
-				if(message["type"] == "ack") return this.callbacks.get(message["msg"]["ack"])["callback"].apply(this, [message["msg"]["result"]].concat(this.callbacks.get(message["msg"]["ack"])["args"]));
-				else if(message["src"] == SCRIPT_WEB) return this.fromWeb(sender["tab"]["id"], message["type"], message["msg"], callback);
-				break;
-				
-			case SCRIPT_CONTENT:
-				this.totab.apply(this, [sender["tab"]["id"], {"src": message["src"], "dst": message["dst"], "type": message["type"], "msg": message["msg"], "ftab": sender["tab"]["id"], "ttab": message["ttab"]}, callback]);
-				return true; // relay, must return true ??
-				break;
-				
-			case SCRIPT_POPUP:
-				this.toruntime.apply(this, ["", {"src": message["src"], "dst": message["dst"], "type": message["type"], "msg": message["msg"], "ftab": sender["tab"]["id"]}, callback]);
-				return true; // relay, must return true ??
-				break;
-				
-		}
-		
-		return true; // RETURN TRUE TO ENABLE ASYNC CALLBACK	
-	}
-	
-	/**
-	* @method toContent: send message to content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {BackgroundMessage}
-	*/
-	toContent(tabid, type, message, callback) {
-		this.totab.apply(this, 
-			[
-				tabid, 
-				{
-					"src": SCRIPT_BACKGROUND, 
-					"dst": SCRIPT_CONTENT, 
-					"type": type, 
-					"msg": message
-				}, callback
-			].concat(Array.prototype.slice.call(arguments).slice(4))
-		);
-	}
-	
-	/**
-	* @method toWeb: send message to web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {BackgroundMessage}
-	*/
-	toWeb(tabid, type, message, callback) {
-		this.totab.apply(this, 
-			[
-				tabid, 
-				{
-					"src": SCRIPT_BACKGROUND, 
-					"dst": SCRIPT_WEB, 
-					"type": type, 
-					"msg": message, 
-					"ack": this.ack.apply(this, Array.prototype.slice.call(arguments).slice(3))
-				}, 
-				die
-			]
-		);
-	}
-	
-	/**
-	* @method toPopup: send message to popup
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {BackgroundMessage}
-	*/
-	toPopup(type, message, callback) {
-		this.toruntime.apply(this, 
-			[
-				"", 
-				{
-					"src": SCRIPT_BACKGROUND, 
-					"dst": SCRIPT_POPUP, 
-					"type": type, 
-					"msg": message
-				}, callback
-			].concat(Array.prototype.slice.call(arguments).slice(3))
-		);
-	}
-	
-	/**
-	* @method fromContent: received message from content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {BackgroundMessage}
-	*/
-	fromContent(tabid, type, message, callback) {
-		//trace(type, "from content :", message);
-		
-		switch(type) {
-			
-			case "ehlo":
-				callback(tabid);
-				this.onConnect({"name": "content", "tab": tabid});
-				return false;
-				break;
-			
-		}
-		
-		if(this.onContentMessage(tabid, type, message, callback)) return true;
-		else callback();
-	}
-	
-	/**
-	* @method fromWeb: received message from web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {BackgroundMessage}
-	*/
-	fromWeb(tabid, type, message, callback) {
-		//trace(type, "from web :", message);
-		
-		switch(type) {
-			
-			case "ehlo":
-				callback(tabid);
-				this.onConnect({"name": "web", "tab": tabid});
-				return;
-				break;
-			
-		}
-		
-		if(this.onWebMessage(tabid, type, message, callback)) return true;
-		else callback();
-	}
-	
-	/**
-	* @method fromPopup: received message from popup script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {BackgroundMessage}
-	*/
-	fromPopup(type, message, callback) {
-		//trace(type, "from popup :", message);
-		
-		switch(type) {
-			
-			case "ehlo":
-				callback();
-				this.onConnect({"name": "popup"});
-				return;
-				break;
-			
-		}
-		
-		if(this.onPopupMessage(type, message, callback)) return true;
-		else callback();
-	}
-	
-}
-
-/**
-* @nocollapse
-* @extends {MessageBase}
-*/
-class ContentMessage extends MessageBase {
-	
-	constructor(onConnect, onBackgroundMessage, onContentMessage, onWebMessage, onPopupMessage, onHandle) {
-		super();
-		
-		if(DEBUG) trace("init content message");
-		
-		this.tabid = 0;
-		
-		this.onConnect = onConnect;
-		this.onBackgroundMessage = onBackgroundMessage;
-		this.onWebMessage = onWebMessage;
-		this.onContentMessage = onContentMessage;
-		this.onPopupMessage = onPopupMessage;
-		this.onHandle = onHandle;
-		
-		this.messageHandler = this.onMessage.bind(this);
-		which.runtime.onMessage.addListener(this.messageHandler);
-		
-		this.toBackground("ehlo", {}, this.helo.bind(this));
-	}
-	
-	/**
-	* @method helo: background script connected
-	* @param {number} tabid: 
-	* @this {ContentMessage}
-	*/
-	helo(tabid) {
-		this.tabid = tabid;
-		this.onConnect(tabid);
-	}
-	
-	/**
-	* @method onMessage: received message
-	* @param {Object} message: 
-	* @param sender: 
-	* @param {Function} callback: 
-	* @this {ContentMessage}
-	*/
-	onMessage(message, sender, callback) {
-		if(which.runtime.id != sender.id) return; // other exts not allowed to send messages !!
-		
-		switch(message["dst"]) {
-			
-			case SCRIPT_CONTENT:
-				if(message["type"] == "ack") return this.callbacks.get(message["msg"]["ack"])["callback"].apply(this, [message["msg"]["result"]].concat(this.callbacks.get(message["msg"]["ack"])["args"]));
-				else if(message["src"] == SCRIPT_BACKGROUND) return this.fromBackground(message["type"], message["msg"], callback);
-				else if(message["src"] == SCRIPT_CONTENT) return this.fromContent(message["ftab"], message["type"], message["msg"], callback);
-				else if(message["src"] == SCRIPT_WEB) return this.fromWeb(message["ftab"], message["type"], message["msg"], callback);
-				else if(message["src"] == SCRIPT_POPUP) return this.fromPopup(message["type"], message["msg"], callback);
-				break;
-			
-			case SCRIPT_WEB:
-				return this.towindow({"src": message["src"], "dst": SCRIPT_WEB, "type": message["type"], "msg": message["msg"], "ack": message["ack"]});
-				break;
-		}
-		
-		return false; // unhandled, no async callback
-	}
-	
-	/**
-	* @method toBackground: send a message to background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {ContentMessage}
-	*/
-	toBackground(type, message, callback) {
-		this.toruntime.apply(this, 
-			[
-				"", 
-				{
-					"src": SCRIPT_CONTENT, 
-					"dst": SCRIPT_BACKGROUND, 
-					"type": type, 
-					"msg": message
-				}, callback
-			].concat(Array.prototype.slice.call(arguments).slice(3))
-		);
-	}
-	
-	/**
-	* @method toPopup: send a message to popup script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {ContentMessage}
-	*/
-	toPopup(type, message, callback) {
-		this.toruntime.apply(this, 
-			[
-				"", 
-				{
-					"src": SCRIPT_CONTENT, 
-					"dst": SCRIPT_POPUP, 
-					"type": type, 
-					"msg": message,
-					"ftab": this.tabid
-				}, 
-				callback
-			].concat(Array.prototype.slice.call(arguments).slice(3))
-		);
-	}
-	
-	/**
-	* @method toContent: send a message to content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {ContentMessage}
-	*/
-	toContent(tabid, type, message, callback) {
-		this.toruntime.apply(this, 
-			[
-				"", 
-				{
-					"src": SCRIPT_CONTENT, 
-					"dst": SCRIPT_CONTENT, 
-					"type": type, 
-					"msg": message,
-					"ftab": this.tabid,
-					"ttab": tabid
-				}, 
-				callback
-			].concat(Array.prototype.slice.call(arguments).slice(3))
-		);
-	}
-	
-	/**
-	* @method toWeb: send a message to web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {ContentMessage}
-	*/
-	toWeb(tabid, type, message, callback) {
-		// if tabid != this.tabid, pipe to corresponding content tab id and then to window
-		this.towindow.apply(this, 
-			[
-				{
-					"src": SCRIPT_CONTENT, 
-					"dst": SCRIPT_WEB, 
-					"type": type, 
-					"msg": message, 
-					"ftab": this.tabid, 
-					"ttab": tabid, 
-					"ack": this.ack.apply(this, Array.prototype.slice.call(arguments).slice(3))
-				}
-			]
-		);
-	}
-	
-	/**
-	* @method fromBackground: received message from background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {ContentMessage}
-	*/
-	fromBackground(type, message, callback) {
-		//trace(type, "from background :", message);
-		if(this.onBackgroundMessage(type, message, callback)) return true;
-		else callback();
-	}
-	
-	/**
-	* @method fromContent: received message from content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {ContentMessage}
-	*/
-	fromContent(tabid, type, message, callback) {
-		//trace(type, "from content :", message);
-		if(this.onContentMessage(tabid, type, message, callback)) return true;
-		else callback();
-	}
-	
-	/**
-	* @method fromWeb: received message from web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {ContentMessage}
-	*/
-	fromWeb(tabid, type, message, callback) {
-		//trace(type, "from web :", message);
-		if(this.onWebMessage(tabid, type, message, callback)) return true;
-		else callback();
-	}
-	
-	/**
-	* @method fromPopup: received message from popup script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {ContentMessage}
-	*/
-	fromPopup(type, message, callback) {
-		//trace(type, "from popup :", message);
-		if(this.onPopupMessage(type, message, callback)) return true;
-		else callback();
-	}
-	
-}
-
-/**
-* @nocollapse
-* @extends {MessageBase}
-*/
-class WebMessage extends MessageBase {
-	
-	/**
-	* @constructor
-	* @param {String} extid: Chrome extension identifier
-	* @param {Function} onConnect: 
-	* @param {Function} onBackgroundMessage: 
-	* @param {Function} onContentMessage: 
-	* @param {Function} onWebMessage: 
-	* @param {Function} onPopupMessage: 
-	*/
-	constructor(extid, onConnect, onBackgroundMessage, onContentMessage, onWebMessage, onPopupMessage) {
-		super();
-		
-		if(DEBUG) trace("init web message");
-		
-		this.extid = extid;
-		this.tabid = 0;
-		
-		this.onConnect = onConnect;
-		this.onBackgroundMessage = onBackgroundMessage;
-		this.onContentMessage = onContentMessage;
-		this.onWebMessage = onWebMessage;
-		this.onPopupMessage = onPopupMessage;
-		
-		window.addEventListener("message", this.onWindowPostMessage.bind(this), false);
-		
-		this.toBackground("ehlo", {}, this.ehlo.bind(this));
-	}
-	
-	ehlo(tabid) {
-		this.tabid = tabid;
-		this.onConnect(tabid);
-	}
-	
-	onWindowPostMessage(event) {
-		if(event["data"]["type"] == "ack") return this.callbacks.get(event["data"]["msg"]["ack"])["callback"].apply(this, [event["data"]["msg"]["result"]].concat(this.callbacks.get(event["data"]["msg"]["ack"])["args"]));
-		else if(event["data"]["src"] == SCRIPT_BACKGROUND) this.fromBackground(event["data"]["type"], event["data"]["msg"], this.callback(event["data"]["ack"], event["data"]["src"]));
-		else if(event["data"]["src"] == SCRIPT_CONTENT) this.fromContent(event["data"]["ftab"], event["data"]["type"], event["data"]["msg"], this.callback(event["data"]["ack"], event["data"]["src"], event["data"]["ftab"]));
-		else if(event["data"]["src"] == SCRIPT_WEB) this.fromWeb(event["data"]["ftab"], event["data"]["type"], event["data"]["msg"], this.callback(event["data"]["ack"], event["data"]["src"], event["data"]["ftab"]));
-		else if(event["data"]["src"] == SCRIPT_POPUP) this.fromPopup(event["data"]["type"], event["data"]["msg"], this.callback(event["data"]["ack"], event["data"]["src"]));
-	}
-	
-	/**
-	* @method toBackground: send a message to background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {WebMessage}
-	*/
-	toBackground(type, message, callback) {
-		this.toruntime.apply(this, 
-			[
-				this.extid, 
-				{
-					"src": SCRIPT_WEB, 
-					"dst": SCRIPT_BACKGROUND, 
-					"type": type, 
-					"msg": message, 
-					"ftab": this.tabid
-				}, 
-				callback
-			].concat(Array.prototype.slice.call(arguments).slice(3))
-		);
-	}
-	
-	/**
-	* @method toContent: send a message to content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {WebMessage}
-	*/
-	toContent(tabid, type, message, callback) {
-		this.toruntime.apply(this, 
-			[
-				this.extid, 
-				{
-					"src": SCRIPT_WEB, 
-					"dst": SCRIPT_CONTENT, 
-					"type": type, 
-					"msg": message, 
-					"ftab": this.tabid,
-					"ttab": tabid
-				}, 
-				callback
-			].concat(Array.prototype.slice.call(arguments).slice(4))
-		);
-	}
-	
-	/**
-	* @method toWeb: send a message to web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {WebMessage}
-	*/
-	toWeb(tabid, type, message, callback) {
-		this.toruntime.apply(this, 
-			[
-				this.extid, 
-				{
-					"src": SCRIPT_WEB, 
-					"dst": SCRIPT_WEB, 
-					"type": type, 
-					"msg": message, 
-					"ftab": this.tabid,
-					"ttab": tabid
-				}, 
-				callback
-			].concat(Array.prototype.slice.call(arguments).slice(4))
-		);
-	}
-	
-	/**
-	* @method toPopup: send message to popup
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {WebMessage}
-	*/
-	toPopup(type, message, callback) {
-		this.toruntime.apply(this, 
-			[
-				this.extid, 
-				{
-					"src": SCRIPT_WEB, 
-					"dst": SCRIPT_POPUP, 
-					"type": type, 
-					"msg": message, 
-					"ftab": this.tabid
-				}, 
-				callback
-			].concat(Array.prototype.slice.call(arguments).slice(3))
-		);
-	}
-	
-	/**
-	* @method fromBackground: received message from background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {WebMessage}
-	*/
-	fromBackground(type, message, callback) {
-		//trace(type, "from background :", message);
-		if(this.onBackgroundMessage(type, message, callback)) return true;
-		else callback();
-	}
-	
-	/**
-	* @method fromContent: received message from content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {WebMessage}
-	*/
-	fromContent(tabid, type, message, callback) {
-		//trace(type, "from content :", message);
-		if(this.onContentMessage(tabid, type, message, callback)) return true;
-		else callback();
-	}
-	
-	/**
-	* @method fromWeb: received message from web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {WebMessage}
-	*/
-	fromWeb(tabid, type, message, callback) {
-		//trace(type, "from web :", message);
-		if(this.onWebMessage(tabid, type, message, callback)) return true;
-		else callback();
-	}
-	
-	/**
-	* @method fromPopup: received message from popup script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {WebMessage}
-	*/
-	fromPopup(type, message, callback) {
-		//trace(type, "from popup :", message);
-		if(this.onPopupMessage(type, message, callback)) return true;
-		else callback();
-	}
-	
-}
-
-/**
-* @nocollapse
-* @extends {MessageBase}
-*/
-class PopupMessage extends MessageBase {
-	
-	constructor(onConnect, onBackgroundMessage, onContentMessage, onWebMessage) {
-		super();
-		
-		if(DEBUG) trace("init popup message");
-		
-		this.onConnect = onConnect;
-		this.onBackgroundMessage = onBackgroundMessage;
-		this.onContentMessage = onContentMessage;
-		this.onWebMessage = onWebMessage;
-		
-		this.messageHandler = this.onMessage.bind(this);
-		which.runtime.onMessage.addListener(this.messageHandler);
-		
-		this.toBackground("ehlo", {}, this.ehlo.bind(this));
-	}
-	
-	ehlo() {
-		this.onConnect();
-	}
-	
-	/**
-	* @method onMessage: received message
-	* @param {Object} message: 
-	* @param sender: 
-	* @param {Function} callback: 
-	* @this {PopupMessage}
-	*/
-	onMessage(message, sender, callback) {
-		//trace(message);
-		if(which.runtime.id != sender.id) return;
-		if(message["type"] == "ack") return this.callbacks.get(message["msg"]["ack"])["callback"].apply(this, [message["msg"]["result"]].concat(this.callbacks.get(message["msg"]["ack"])["args"]));
-		if(message["dst"] == SCRIPT_POPUP && message["src"] == SCRIPT_BACKGROUND) return this.fromBackground(message["type"], message["msg"], callback);
-		else if(message["dst"] == SCRIPT_POPUP && message["src"] == SCRIPT_CONTENT) return this.fromContent(sender["tab"]["id"], message["type"], message["msg"], callback);
-		else if(message["dst"] == SCRIPT_POPUP && message["src"] == SCRIPT_WEB) return this.fromWeb(message["ftab"], message["type"], message["msg"], callback);
-		return false; // RETURN TRUE TO ENABLE ASYNC CALLBACK
-	}
-	
-	/**
-	* @method toBackground: send a message to background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {PopupMessage}
-	*/
-	toBackground(type, message, callback) {
-		let args = Array.prototype.slice.call(arguments);
-		this.toruntime.apply(this, 
-			[
-				"", 
-				{
-					"src": SCRIPT_POPUP, 
-					"dst": SCRIPT_BACKGROUND, 
-					"type": type, 
-					"msg": message
-				}, 
-				callback
-			].concat(args.slice(3))
-		);
-	}
-	
-	/**
-	* @method toContent: send a message to content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {PopupMessage}
-	*/
-	toContent(tabid, type, message, callback) {
-		this.totab.apply(this, 
-			[
-				tabid, 
-				{
-					"src": SCRIPT_POPUP, 
-					"dst": SCRIPT_CONTENT, 
-					"type": type, 
-					"msg": message
-				}, 
-				callback
-			].concat(Array.prototype.slice.call(arguments).slice(4))
-		);
-	}
-	
-	/**
-	* @method toWeb: send a message to web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {PopupMessage}
-	*/
-	toWeb(tabid, type, message, callback) {
-		this.totab.apply(this, 
-			[
-				tabid, 
-				{
-					"src": SCRIPT_POPUP, 
-					"dst": SCRIPT_WEB, 
-					"type": type, 
-					"msg": message, 
-					"ack": this.ack.apply(this, Array.prototype.slice.call(arguments).slice(3))
-				}, 
-				die
-			]
-		);
-	}
-	
-	/**
-	* @method fromBackground: received message from background script
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {PopupMessage}
-	*/
-	fromBackground(type, message, callback) {
-		//trace(type, "from background :", message);
-		if(this.onBackgroundMessage(type, message, callback)) return true;
-		else callback();
-	}
-	
-	/**
-	* @method fromContent: received message from content script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {PopupMessage}
-	*/
-	fromContent(tabid, type, message, callback) {
-		//trace(type, "from content :", message);
-		if(this.onContentMessage(tabid, type, message, callback)) return true;
-		else callback();
-	}
-	
-	/**
-	* @method fromWeb: received message from web script
-	* @param {number} tabid: 
-	* @param {string} type: 
-	* @param {Object} message: 
-	* @param {Function} callback: 
-	* @this {PopupMessage}
-	*/
-	fromWeb(tabid, type, message, callback) {
-		//trace(type, "from web :", message);
-		if(this.onWebMessage(tabid, type, message, callback)) return true;
-		else callback();
-	}
-	
-}
+const name = (typeof chrome === "undefined") ? (typeof browser === "undefined") ? "" : "firefox" : "chrome";
 
 /**
 * @nocollapse
 */
 class ExtensionScript { // don't touch or call
 	
-	constructor() {} // useless, for closure compiler
+	/**
+	* @constructor
+	*/
+	constructor() {
+		
+	}
+	
+	static setUp() {
+		
+	}
 	
 	static initialize() {
-		trace(whereami() + " script initializing");
-		
+		trace(where() + " script initializing");
+		this.which = (typeof chrome === "undefined") ? (typeof browser === "undefined") ? null : browser : chrome;
 	}
 	
 	/**
 	* @method store: store key/value pair in local storage
 	* @param {string} key: 
 	* @param value: 
-	* @param {Function} callback: 
 	*/
-	static store(key, value, callback) {
-		which.storage.sync.set({[key]: value}, callback);
+	static store(key, value) {
+		//trace("store", key);
+		return new Promise((resolve, reject) => this.which.storage.local.set({[key]: value}, () => this.which.runtime.lastError ? reject(Error(this.which.runtime.lastError.message)) : resolve()));
 	}
 	
 	/**
 	* @method restore: fetch key/value pair from local storage
 	* @param keys: string or array of srings
-	* @param {Function} callback: 
 	*/
-	static restore(keys, callback) {
+	static restore(keys) {
 		if(!(keys instanceof Array)) keys = [keys];
-		which.storage.sync.get(keys, callback);
+		//trace("restore", keys.join(", "));
+		return new Promise((resolve, reject) => this.which.storage.local.get(keys, result => this.which.runtime.lastError ? reject(Error(this.which.runtime.lastError.message)) : resolve(result)));
+	}
+	
+	/**
+	* @method remove: delete key/value pair from local storage
+	* @param keys: string or array of srings
+	*/
+	static remove(keys) {
+		if(!(keys instanceof Array)) keys = [keys];
+		//trace("remove", keys.join(", "));
+		return new Promise((resolve, reject) => this.which.storage.local.remove(keys, result => this.which.runtime.lastError ? reject(Error(this.which.runtime.lastError.message)) : resolve()));
+	}
+	
+	static clear() {
+		return new Promise((resolve, reject) => this.which.storage.local.clear(() => this.which.runtime.lastError ? reject(Error(this.which.runtime.lastError.message)) : resolve()));
 	}
 	
 }
@@ -1707,30 +71,35 @@ class ExtensionScript { // don't touch or call
 * @extends {ExtensionScript}
 */
 class ExtensionBackgroundScript extends ExtensionScript {
-	
-				
-	constructor() { super(); }// useless, for closure compiler
-  
+			
+	/**
+	* @constructor
+	*/
+	constructor() {
+		super(); // useless, for closure compiler
+	}
 	
 	static initialize() {
 		super.initialize();
 		
+		this.setUp();
+		
 		this.installHandler = this.onInstall.bind(this);
-		which.runtime.onInstalled.addListener(this.installHandler);
+		this.which.runtime.onInstalled.addListener(this.installHandler);
 		
 		this.startupHandler = this.onStartup.bind(this);
-		which.runtime.onStartup.addListener(this.startupHandler);
+		this.which.runtime.onStartup.addListener(this.startupHandler);
 		
 		this.closeTabHandler = this.onCloseTab.bind(this);
-		which.tabs.onRemoved.addListener(this.closeTabHandler);
+		this.which.tabs.onRemoved.addListener(this.closeTabHandler);
 		
 		this.tabUpdateHandler = this.onTabUpdate.bind(this);
-		which.tabs.onUpdated.addListener(this.tabUpdateHandler);
+		this.which.tabs.onUpdated.addListener(this.tabUpdateHandler);
 		
 		this.tabs = new Map();
 		
-		if(COMM_TYPE == COMM_PORT) this.comm = new BackgroundPort(this.onCommConnect.bind(this), this.onPortDisconnect.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this));
-		else if(COMM_TYPE == COMM_MESSAGE) this.comm = new BackgroundMessage(this.onCommConnect.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this));
+		this.comm = new BackgroundPort(this.onCommConnect.bind(this), this.onPortDisconnect.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this));
+		//this.comm = new BackgroundMessage(this.onCommConnect.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this));
 		
 		this.initialized();
 	}
@@ -1741,7 +110,6 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	*/
 	static initialized() {
 		if(DEBUG) trace(this.name, "initialized");
-		
 	}
 	
 	/**
@@ -1763,8 +131,7 @@ class ExtensionBackgroundScript extends ExtensionScript {
 				// TODO : if COMM_MESSAGE setInterval check getViews for popup close event // trace(chrome.extension.getViews({"type": "popup"}));
 				this.onOpenPopup();
 				break;
-			
-			
+				
 		}
 	}
 	
@@ -1938,13 +305,13 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	* @param {Function} callback: 
 	*/
 	static activeTab(callback) {
-		which.tabs.query({"active": true, "currentWindow": true}, function(tabs) {
+		this.which.tabs.query({"active": true, "currentWindow": true}, function(tabs) {
 			callback(tabs[0]);
 		});
 	}
 	
 	static updateTab(tabid, updateInfos, callback) {
-		which.tabs.update(tabid, updateInfos, callback);
+		this.which.tabs.update(tabid, updateInfos, callback);
 	}
 	
 	
@@ -1952,7 +319,7 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	
 	
 	static createWindow(url, x, y, width, height, callback) {
-		which.windows.create({
+		this.which.windows.create({
 			"url": url,
 			"left": x,
 			"top": y,
@@ -1967,23 +334,29 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	}
 	
 	static updateWindow(windowId, updateInfo, callback) {
-		which.windows.update(windowId, updateInfo, callback);
+		this.which.windows.update(windowId, updateInfo, callback);
 	}
 	
 	static closeWindow(windowId, callback) {
-		which.windows.remove(windowId, callback);
+		this.which.windows.remove(windowId, callback);
 	}
 	
 	static allWindows(callback) {
-		which.windows.getAll({"populate": true, "windowTypes": ["popup"]}, callback);
+		this.which.windows.getAll({"populate": true, "windowTypes": ["popup"]}, callback);
+	}
+	
+	static createTab(url) {
+		return new Promise((resolve, reject) => chrome.tabs.create({
+			url: url
+		}, tab => resolve(tab)));
 	}
 	
 	static setBadgeText(text, callback) {
-		which.browserAction.setBadgeText({"text": text}, callback);
+		this.which.browserAction.setBadgeText({"text": text}, callback);
 	}
 	
 	static setBadgeColor(color, callback) {
-		which.browserAction.setBadgeBackgroundColor({"color": color}, callback);
+		this.which.browserAction.setBadgeBackgroundColor({"color": color}, callback);
 	}
 	
 	/**
@@ -2005,7 +378,7 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	}
 	
 	static reloadTab(tabid, callback) {
-		which.tabs.reload(tabid, {"bypassCache": false}, callback);
+		this.which.tabs.reload(tabid, {"bypassCache": false}, callback);
 	}
 	
 	/**
@@ -2016,11 +389,15 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	* @param {Function} callback: 
 	*/
 	static exec(tabid, code, callback) {
-		which.tabs.executeScript(tabid, {"code": code}, callback);
+		return new Promise((resolve, reject) => this.which.tabs.executeScript(tabid, {"code": code}, result => resolve(result)));
+	}
+	
+	static close(tabid) {
+		return new Promise((resolve, reject) => this.which.tabs.remove(tabid, result => resolve(result)));
 	}
 	
 	static download(options, callback) {
-		which.downloads.download(options, callback)
+		this.which.downloads.download(options, callback)
 	}
 }
 
@@ -2029,18 +406,26 @@ class ExtensionBackgroundScript extends ExtensionScript {
 * @extends {ExtensionScript}
 */
 class ExtensionContentScript extends ExtensionScript {
-	
-				
-	constructor() { super(); }// useless, for closure compiler
-  
+			
+	/**
+	* @constructor
+	*/
+	constructor() {
+		super(); // useless, for closure compiler
+	}
 	
 	static initialize() {
 		super.initialize();
 		
+		this.setUp();
+		
+		if(!defined(this.injectWeb)) this.injectWeb = true;
+		
 		this.tabid = 0;
 		
-		if(COMM_TYPE == COMM_PORT) this.comm = new ContentPort(this.commConnected.bind(this), this.fromBackgroundMiddleware.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this), this.onHandle.bind(this));
-		else if(COMM_TYPE == COMM_MESSAGE) this.comm = new ContentMessage(this.commConnected.bind(this), this.fromBackgroundMiddleware.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this), this.onHandle.bind(this));
+		
+		this.comm = new ContentPort(this.commConnected.bind(this), this.fromBackgroundMiddleware.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this), this.onHandle.bind(this));
+		//this.comm = new ContentMessage(this.commConnected.bind(this), this.fromBackgroundMiddleware.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this), this.onHandle.bind(this));
 	}
 	
 	/**
@@ -2049,8 +434,20 @@ class ExtensionContentScript extends ExtensionScript {
 	*/
 	static commConnected(tabid) {
 		this.tabid = tabid;
-		this.inject(["base/extbase.js", "web.js"], this.webInjected.bind(this));
-		//this.inject(["extension.min.js"], this.webInjected.bind(this));
+		if(name != "firefox" && this.injectWeb) {
+			trace("inject web script");
+			this.inject([
+				"base/extbase.js", 
+				//"base/messages.js", 
+				"base/ports.js", 
+				"base/utils.js", 
+				"web.js"
+			], this.webInjected.bind(this));
+		}
+		else {
+			trace("no web inject");
+			this.initialized();
+		}
 	}
 	
 	static webInjected() {
@@ -2071,29 +468,27 @@ class ExtensionContentScript extends ExtensionScript {
 		if(!(src instanceof Array)) src = [src];
 		let list = src.slice();
 		let args = Array.prototype.slice.call(arguments);
-		doLoad(src[0]);
+		doLoad.bind(this)(src[0]);
 		
 		function doLoad(script) {
-			if(DEBUG) trace("load script : " + script);
-			let url = which.extension.getURL("resources/" + script);
+			//trace("load script : " + script);
 			let scr = document.createElement("script");
-			scr.async = 1;
+			scr.setAttribute("type", "text/javascript");
+			scr.setAttribute("async", "true");
 			document.head.appendChild(/** @type {!Element} */(scr));
-			scr.onload = scr.onreadystatechange = /** @param {!Event|null} _ @param {*=} isAbort @return {?}*/function(_, isAbort) {
+			scr.onload = scr.onreadystatechange = (/** @param {!Event|null} _ @param {*=} isAbort @return {?}*/function(_, isAbort) {
 				if(isAbort || !scr.readyState || /loaded|complete/.test(scr.readyState)) {
 					scr.onload = scr.onreadystatechange = null;
 					scr = undefined;
-					if(!isAbort) if(DEBUG) trace("script loaded :", src[0]);
-					else trace("script load fail :", src[0]);
+					if(isAbort) trace("script load fail :", src[0]);
+					else trace("script loaded :", src[0]); // remove script tag ?
 					src.shift();
 					if(src.length == 0) callback.apply(this, [list].concat(args.slice(2)));
-					else doLoad(src[0]);
+					else doLoad.bind(this)(src[0]);
 				}
-				else {
-					trace("script load fail :", src[0]);
-				}
-			};
-			scr.src = url;
+			}).bind(this);
+			let url = this.which.extension.getURL("resources/" + script);
+			scr.setAttribute("src", url);
 		}
 	}
 	
@@ -2193,15 +588,20 @@ class ExtensionContentScript extends ExtensionScript {
 */
 class ExtensionWebScript extends ExtensionScript {
 	
-				
-	constructor() { super(); }// useless, for closure compiler
-  
+	/**
+	* @constructor
+	*/
+	constructor() {
+		super(); // useless, for closure compiler
+	}
 	
 	static initialize() {
 		super.initialize();
 		
-		if(COMM_TYPE == COMM_PORT) this.comm = new WebPort(this.extid, this.commConnected.bind(this), this.fromBackground.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this));
-		else if(COMM_TYPE == COMM_MESSAGE) this.comm = new WebMessage(this.extid, this.commConnected.bind(this), this.fromBackground.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this));
+		this.setUp();
+		
+		this.comm = new WebPort(this.extid, this.commConnected.bind(this), this.fromBackground.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this));
+		//this.comm = new WebMessage(this.extid, this.commConnected.bind(this), this.fromBackground.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this));
 	}
 	
 	/**
@@ -2267,15 +667,20 @@ class ExtensionWebScript extends ExtensionScript {
 */
 class ExtensionPopupScript extends ExtensionScript {
 	
-				
-	constructor() { super(); }// useless, for closure compiler
-  
+	/**
+	* @constructor
+	*/
+	constructor() {
+		super(); // useless, for closure compiler
+	}
 	
 	static initialize() {
 		super.initialize();
 		
-		if(COMM_TYPE == COMM_PORT) this.comm = new PopupPort(this.commConnected.bind(this), this.fromBackgroundMiddleware.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this));
-		else if(COMM_TYPE == COMM_MESSAGE) this.comm = new PopupMessage(this.commConnected.bind(this), this.fromBackgroundMiddleware.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this));
+		this.setUp();
+		
+		this.comm = new PopupPort(this.commConnected.bind(this), this.fromBackgroundMiddleware.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this));
+		//this.comm = new PopupMessage(this.commConnected.bind(this), this.fromBackgroundMiddleware.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this));
 	}
 	
 	/**
@@ -2351,56 +756,10 @@ class ExtensionPopupScript extends ExtensionScript {
 	// TODO : fromPopup ? // other popup ?
 }
 
-/**
-* @method merge: merge objects
-* @param {...*} var_args
-*/
-function merge(var_args) {
-	return Object.assign.apply(this, Array.prototype.slice.call(arguments));
-}
-
-/**
-* @method trace: console.log with file name and line number
-* @param {...*} var_args
-*/
-function trace(var_args) {
-	// return; // no trace
-	let args = Array.prototype.slice.call(arguments);
-	if(DEBUG) {
-		let stack = new Error().stack.trim(), re = /([\w\.]+)\.js:(\d+)/gmi, fileLine = null, n = 0;
-		while(fileLine = re.exec(stack)) if(++n == 2) break;
-		args.push("// " + fileLine[1] + ":" + fileLine[2]);
-	}
-	console.log.apply(console, args);
-}
 
 /**
 * https://youtu.be/OnoNITE-CLc?t=1m22s
 **/
 function liftoff(classRef) {
-	whereami() == "background" && classRef.prototype instanceof ExtensionBackgroundScript ? classRef.initialize() : (whereami() == "content" && classRef.prototype instanceof ExtensionContentScript ? classRef.initialize() : (whereami() == "popup" && classRef.prototype instanceof ExtensionPopupScript ? classRef.initialize() : (whereami() == "web" && classRef.prototype instanceof ExtensionWebScript ? classRef.initialize() : die())));
-}
-
-function whereami() {
-	/*if(chrome && chrome.extension && chrome.extension.getBackgroundPage && chrome.extension.getBackgroundPage() === window) {
-		return "BACKGROUND";
-	}
-	else if(chrome && chrome.extension && chrome.extension.getBackgroundPage && chrome.extension.getBackgroundPage() !== window) {
-		return "POPUP";
-	}
-	else if(!chrome || !chrome.runtime || !chrome.runtime.onMessage) {
-		return "WEB";
-	}
-	else {
-		return "CONTENT";
-	}*/
-	return (which && which.extension && which.extension.getBackgroundPage ? (which.extension.getBackgroundPage() === window ? "background" : "popup") : (!which || !which.runtime || !which.runtime.onMessage ? "web" : "content")); // lol 1-liner
-}
-
-/**
-* @method trace: console.log with file name and line number
-* @param {string=} causeOfDeath
-*/
-function die(causeOfDeath) {
-	if(typeof causeOfDeath !== "undefined" && causeOfDeath != undefined) trace("DIE", causeOfDeath);
+	where() == "background" && classRef.prototype instanceof ExtensionBackgroundScript ? classRef.initialize() : (where() == "content" && classRef.prototype instanceof ExtensionContentScript ? classRef.initialize() : (where() == "popup" && classRef.prototype instanceof ExtensionPopupScript ? classRef.initialize() : (where() == "web" && classRef.prototype instanceof ExtensionWebScript ? classRef.initialize() : die())));
 }

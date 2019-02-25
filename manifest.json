@@ -8,7 +8,7 @@
 	
 	"version": "1.0",
 	
-	"description": "a chrome extension that does nothing but makes everything possible",
+	"description": "a web extension that does nothing but makes everything possible",
 	
 	"permissions": [ // https://developer.chrome.com/extensions/declare_permissions
 	
@@ -39,6 +39,9 @@
 		"scripts": [
 		
 			"resources/base/extbase.js", // do not remove
+			"resources/base/ports.js", // do not remove
+			//"resources/base/messages.js", // do not remove
+			"resources/base/utils.js", // do not remove
 			"resources/background.js" // do not remove
 			
 			//"resources/extension.min.js" // closure compiled
@@ -59,6 +62,9 @@
 			"js": [
 				
 				"resources/base/extbase.js", // do not remove
+				"resources/base/ports.js", // do not remove
+				//"resources/base/messages.js", // do not remove
+				"resources/base/utils.js", // do not remove
 				"resources/extension.js" // do not remove
 				
 				//"resources/extension.min.js" // closure compiled
@@ -76,7 +82,10 @@
 	
 	"web_accessible_resources": [ // https://developer.chrome.com/extensions/manifest/web_accessible_resources
 	
-		"resources/base/extbase.js",
+		"resources/base/extbase.js", // do not remove
+		"resources/base/ports.js", // do not remove
+		//"resources/base/messages.js", // do not remove
+		"resources/base/utils.js", // do not remove
 		"resources/web.js"
 		
 		//"resources/extension.min.js" // closure compiled
@@ -87,7 +96,7 @@
 	"externally_connectable": { // https://developer.chrome.com/apps/manifest/externally_connectable // https://stackoverflow.com/a/18304985/3089199
 	
 		"ids": [
-		
+			
 			
 			
 		],
