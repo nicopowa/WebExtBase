@@ -8,6 +8,10 @@ function merge(var_args) {
 	return Object.assign.apply(this, Array.prototype.slice.call(arguments));
 }
 
+function mergeArrays(a, b, p) {
+	return a.filter(aa => ! b.find (bb => aa[p] === bb[p])).concat(b);
+}
+
 /**
 * @method trace: console.log with file name and line number
 * @param {...*} var_args
@@ -48,11 +52,15 @@ function defined(value) {
 	return typeof(value) !== "undefined" && value !== null;
 }
 
+function style(element, prop) {
+	return window.getComputedStyle(element, null).getPropertyValue(prop);
+}
+
 class Comm {
 	
 	static async request(url, options) {
 		return new Promise(function(resolve, reject) {
-			options = merge({"method": "GET", "data": undefined, "user": undefined, "password": undefined, "progress": die, "json": true}, options);
+			options = merge({"method": "GET", "data": undefined, "user": undefined, "password": undefined, "progress": die, "json": true, "jsond": false, headers: {}}, options);
 			let xhr = new XMLHttpRequest();
 			if(options.hasOwnProperty("progress")) xhr.upload.onprogress = function(event) {
 				options["progress"].apply(xhr, [(event.loaded / event.total * 100).toFixed(1)]);
@@ -64,10 +72,8 @@ class Comm {
 			};
 			xhr.open(options["method"], url, true, options["user"], options["password"]);
 			if(options.hasOwnProperty("headers")) for(let header in options["headers"]) xhr.setRequestHeader(header, options["headers"][header]);
-			if(typeof options["data"] !== "undefined") {
-				let data = Object.keys(options["data"]).map(key => encodeURIComponent(key) + "=" + encodeURIComponent(options["data"][key])).join("&");
-				xhr.send(data);
-			}
+			if(options["jsond"]) xhr.send(options["data"]);
+			else if(typeof options["data"] !== "undefined") xhr.send(Object.keys(options["data"]).map(key => encodeURIComponent(key) + "=" + encodeURIComponent(options["data"][key])).join("&"));
 			else xhr.send();
 		});
 	}
@@ -84,6 +90,18 @@ class Comm {
 	
 	static async jwtrequest(url, options, jwt) {
 		return await this.request(url, merge(options, {"headers": {"Authorization": "Bearer " + jwt, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}}));
+	}
+	
+	static async get(url) {
+		return await this.urlrequest(url, {});
+	}
+	
+	static async post(url, data) {
+		return await this.urlrequest(url, {"method": "POST", "data": data});
+	}
+	
+	static async json(url, data) {
+		return await this.request(url, {"method": "POST", "jsond": true, "data": JSON.stringify(data), "headers": {"Content-Type": "application/json"}});
 	}
 	
 }

@@ -6,8 +6,8 @@
 
 const DEBUG = true; // true = verbose, false = be quiet + removes every line "if(DEBUG) trace || console.log" while compiling with closure
 
-
-const name = (typeof chrome === "undefined") ? (typeof browser === "undefined") ? "" : "firefox" : "chrome";
+const _which = (typeof chrome === "undefined") ? (typeof browser === "undefined") ? null : browser : chrome;
+const _name = (typeof chrome === "undefined") ? (typeof browser === "undefined") ? "" : "firefox" : "chrome";
 
 /**
 * @nocollapse
@@ -27,7 +27,7 @@ class ExtensionScript { // don't touch or call
 	
 	static initialize() {
 		trace(where() + " script initializing");
-		this.which = (typeof chrome === "undefined") ? (typeof browser === "undefined") ? null : browser : chrome;
+		this.setUp();
 	}
 	
 	/**
@@ -36,8 +36,7 @@ class ExtensionScript { // don't touch or call
 	* @param value: 
 	*/
 	static store(key, value) {
-		//trace("store", key);
-		return new Promise((resolve, reject) => this.which.storage.local.set({[key]: value}, () => this.which.runtime.lastError ? reject(Error(this.which.runtime.lastError.message)) : resolve()));
+		return new Promise((resolve, reject) => _which.storage.local.set({[key]: value}, () => _which.runtime.lastError ? reject(Error(_which.runtime.lastError.message)) : resolve()));
 	}
 	
 	/**
@@ -46,8 +45,7 @@ class ExtensionScript { // don't touch or call
 	*/
 	static restore(keys) {
 		if(!(keys instanceof Array)) keys = [keys];
-		//trace("restore", keys.join(", "));
-		return new Promise((resolve, reject) => this.which.storage.local.get(keys, result => this.which.runtime.lastError ? reject(Error(this.which.runtime.lastError.message)) : resolve(result)));
+		return new Promise((resolve, reject) => _which.storage.local.get(keys, result => _which.runtime.lastError ? reject(Error(_which.runtime.lastError.message)) : resolve(result)));
 	}
 	
 	/**
@@ -56,12 +54,14 @@ class ExtensionScript { // don't touch or call
 	*/
 	static remove(keys) {
 		if(!(keys instanceof Array)) keys = [keys];
-		//trace("remove", keys.join(", "));
-		return new Promise((resolve, reject) => this.which.storage.local.remove(keys, result => this.which.runtime.lastError ? reject(Error(this.which.runtime.lastError.message)) : resolve()));
+		return new Promise((resolve, reject) => _which.storage.local.remove(keys, result => _which.runtime.lastError ? reject(Error(_which.runtime.lastError.message)) : resolve()));
 	}
 	
+	/**
+	* @method clear: clear local storage
+	*/
 	static clear() {
-		return new Promise((resolve, reject) => this.which.storage.local.clear(() => this.which.runtime.lastError ? reject(Error(this.which.runtime.lastError.message)) : resolve()));
+		return new Promise((resolve, reject) => _which.storage.local.clear(() => _which.runtime.lastError ? reject(Error(_which.runtime.lastError.message)) : resolve()));
 	}
 	
 }
@@ -82,19 +82,17 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	static initialize() {
 		super.initialize();
 		
-		this.setUp();
-		
 		this.installHandler = this.onInstall.bind(this);
-		this.which.runtime.onInstalled.addListener(this.installHandler);
+		_which.runtime.onInstalled.addListener(this.installHandler);
 		
 		this.startupHandler = this.onStartup.bind(this);
-		this.which.runtime.onStartup.addListener(this.startupHandler);
+		_which.runtime.onStartup.addListener(this.startupHandler);
 		
 		this.closeTabHandler = this.onCloseTab.bind(this);
-		this.which.tabs.onRemoved.addListener(this.closeTabHandler);
+		_which.tabs.onRemoved.addListener(this.closeTabHandler);
 		
 		this.tabUpdateHandler = this.onTabUpdate.bind(this);
-		this.which.tabs.onUpdated.addListener(this.tabUpdateHandler);
+		_which.tabs.onUpdated.addListener(this.tabUpdateHandler);
 		
 		this.tabs = new Map();
 		
@@ -144,7 +142,6 @@ class ExtensionBackgroundScript extends ExtensionScript {
 		switch(infos["name"]) {
 			
 			case "content":
-				
 				break;
 				
 			case "popup":
@@ -152,7 +149,6 @@ class ExtensionBackgroundScript extends ExtensionScript {
 				break;
 				
 			case "web":
-			
 				break;
 				
 			default:
@@ -184,14 +180,12 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	* dispatched on install && reload ext
 	*/
 	static onInstall() {
-		
 		trace("installed");
-		
 	}
 	
 	/**
 	* @public
-	* dispatched on chrome startup
+	* dispatched on browser startup
 	*/
 	static onStartup() {
 		trace("startup");
@@ -224,17 +218,19 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	* @param info: 
 	*/
 	static onCloseTab(tabid, info) {
-		if(DEBUG) trace("close tab", tabid, info);
-		if(this.tabs.has(tabid)) this.unregister(tabid);
+		if(this.tabs.has(tabid)) {
+			if(DEBUG) trace("close tab", tabid, info);
+			this.unregister(tabid);
+		}
 	}
 	
-	static onOpenPopup() {
-		this.tabs.forEach(function(tab, tabid) { this.comm.toContent(tabid, "open", {}, die); }.bind(this));
-		this.activeTab(this.popupState.bind(this));
+	static async onOpenPopup() {
+		this.tabs.forEach((tab, tabid) => this.comm.toContent(tabid, "open", {}, die));
+		this.comm.toPopup("tabs", {"tabs": Array.from(this.tabs.keys()), "active": await this.activeTab()}, die);
 	}
 	
 	static onClosePopup() {
-		this.tabs.forEach(function(tab, tabid) { this.comm.toContent(tabid, "close", {}); }.bind(this));
+		this.tabs.forEach((tab, tabid) => this.comm.toContent(tabid, "close", {}));
 	}
 	
 	/**
@@ -291,35 +287,30 @@ class ExtensionBackgroundScript extends ExtensionScript {
 		//if(DEBUG) trace(type, "from popup :", message);
 	}
 	
+	// TOOLBOX
+	
 	/**
-	* @method popupState: send tab list to popup
-	* @param tab: async active tab
+	* @public
+	* @method activeTab: fetch active chrome tab
 	*/
-	static popupState(tab) {
-		this.comm.toPopup("tabs", {"tabs": Array.from(this.tabs.keys()), "active": tab}, die);
+	static tab(tabId) {
+		return new Promise((resolve, reject) => _which.tabs.get(tabId, tab => resolve(tab)));
 	}
 	
 	/**
 	* @public
 	* @method activeTab: fetch active chrome tab
-	* @param {Function} callback: 
 	*/
-	static activeTab(callback) {
-		this.which.tabs.query({"active": true, "currentWindow": true}, function(tabs) {
-			callback(tabs[0]);
-		});
+	static activeTab() {
+		return new Promise((resolve, reject) => _which.tabs.query({"active": true, "currentWindow": true}, tabs => resolve(tabs[0])));
 	}
 	
-	static updateTab(tabid, updateInfos, callback) {
-		this.which.tabs.update(tabid, updateInfos, callback);
+	static updateTab(tabid, updateInfos) {
+		return new Promise((resolve, reject) => _which.tabs.update(tabid, updateInfos, tab => resolve(tab)));
 	}
 	
-	
-	// TOOLBOX
-	
-	
-	static createWindow(url, x, y, width, height, callback) {
-		this.which.windows.create({
+	static createWindow(url, x, y, width, height) {
+		return new Promise((resolve, reject) => _which.windows.create({
 			"url": url,
 			"left": x,
 			"top": y,
@@ -330,55 +321,51 @@ class ExtensionBackgroundScript extends ExtensionScript {
 			"type": "popup", // "normal", "popup"
 			"state": "normal", // "normal", "minimized", "maximized", "fullscreen"
 			"setSelfAsOpener": false
-		}, callback);
+		}, window => resolve(window)));
 	}
 	
-	static updateWindow(windowId, updateInfo, callback) {
-		this.which.windows.update(windowId, updateInfo, callback);
+	static updateWindow(windowId, updateInfo) {
+		return new Promise((resolve, reject) => _which.windows.update(windowId, updateInfos, window => resolve(window)));
 	}
 	
-	static closeWindow(windowId, callback) {
-		this.which.windows.remove(windowId, callback);
+	static closeWindow(windowId) {
+		return new Promise((resolve, reject) => _which.windows.remove(windowId, () => resolve()));
 	}
 	
-	static allWindows(callback) {
-		this.which.windows.getAll({"populate": true, "windowTypes": ["popup"]}, callback);
+	static allWindows() {
+		return new Promise((resolve, reject) => _which.windows.getAll({"populate": true, "windowTypes": ["popup"]}, windows => resolve(windows)));
 	}
 	
 	static createTab(url) {
-		return new Promise((resolve, reject) => chrome.tabs.create({
-			url: url
-		}, tab => resolve(tab)));
+		return new Promise((resolve, reject) => _which.tabs.create({ url: url }, tab => resolve(tab)));
 	}
 	
-	static setBadgeText(text, callback) {
-		this.which.browserAction.setBadgeText({"text": text}, callback);
+	static setBadgeText(text) {
+		return new Promise((resolve, reject) => _which.browserAction.setBadgeText({"text": text}, () => resolve()));
 	}
 	
-	static setBadgeColor(color, callback) {
-		this.which.browserAction.setBadgeBackgroundColor({"color": color}, callback);
+	static setBadgeColor(color) {
+		return new Promise((resolve, reject) => _which.browserAction.setBadgeBackgroundColor({"color": color}, () => resolve()));
 	}
 	
 	/**
 	* @method muteTab: mute tab
 	* @param {number} tabid: tab id
-	* @param {Function} callback: 
 	*/
-	static muteTab(tabid, callback) {
-		this.updateTab(tabid, {"muted": true}, callback);
+	static muteTab(tabid) {
+		return this.updateTab(tabid, {"muted": true});
 	}
 	
 	/**
 	* @method unmuteTab: unmute tab
 	* @param {number} tabid: tab id
-	* @param {Function} callback: 
 	*/
-	static unmuteTab(tabid, callback) {
-		this.updateTab(tabid, {"muted": false}, callback);
+	static unmuteTab(tabid) {
+		return this.updateTab(tabid, {"muted": false});
 	}
 	
-	static reloadTab(tabid, callback) {
-		this.which.tabs.reload(tabid, {"bypassCache": false}, callback);
+	static reloadTab(tabid) {
+		return new Promise((resolve, reject) => _which.tabs.reload(tabid, {"bypassCache": false}, () => resolve()));
 	}
 	
 	/**
@@ -386,18 +373,17 @@ class ExtensionBackgroundScript extends ExtensionScript {
 	* @method exec: UNSAFE execute code in page
 	* @param {number} tabid: 
 	* @param code: 
-	* @param {Function} callback: 
 	*/
-	static exec(tabid, code, callback) {
-		return new Promise((resolve, reject) => this.which.tabs.executeScript(tabid, {"code": code}, result => resolve(result)));
+	static exec(tabid, code) {
+		return new Promise((resolve, reject) => _which.tabs.executeScript(tabid, {"code": code}, result => resolve(result)));
 	}
 	
 	static close(tabid) {
-		return new Promise((resolve, reject) => this.which.tabs.remove(tabid, result => resolve(result)));
+		return new Promise((resolve, reject) => _which.tabs.remove(tabid, result => resolve(result)));
 	}
 	
-	static download(options, callback) {
-		this.which.downloads.download(options, callback)
+	static download(options) {
+		return new Promise((resolve, reject) => _which.downloads.download(options, result => resolve(result)));
 	}
 }
 
@@ -416,8 +402,6 @@ class ExtensionContentScript extends ExtensionScript {
 	
 	static initialize() {
 		super.initialize();
-		
-		this.setUp();
 		
 		if(!defined(this.injectWeb)) this.injectWeb = true;
 		
@@ -487,7 +471,7 @@ class ExtensionContentScript extends ExtensionScript {
 					else doLoad.bind(this)(src[0]);
 				}
 			}).bind(this);
-			let url = this.which.extension.getURL("resources/" + script);
+			let url = _which.extension.getURL("resources/" + script);
 			scr.setAttribute("src", url);
 		}
 	}
@@ -598,8 +582,6 @@ class ExtensionWebScript extends ExtensionScript {
 	static initialize() {
 		super.initialize();
 		
-		this.setUp();
-		
 		this.comm = new WebPort(this.extid, this.commConnected.bind(this), this.fromBackground.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this));
 		//this.comm = new WebMessage(this.extid, this.commConnected.bind(this), this.fromBackground.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this), this.fromPopup.bind(this));
 	}
@@ -676,8 +658,6 @@ class ExtensionPopupScript extends ExtensionScript {
 	
 	static initialize() {
 		super.initialize();
-		
-		this.setUp();
 		
 		this.comm = new PopupPort(this.commConnected.bind(this), this.fromBackgroundMiddleware.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this));
 		//this.comm = new PopupMessage(this.commConnected.bind(this), this.fromBackgroundMiddleware.bind(this), this.fromContent.bind(this), this.fromWeb.bind(this));

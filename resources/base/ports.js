@@ -90,7 +90,7 @@ class BackgroundPort extends PortBase {
 	
 	/**
 	* @method onPortConnect: port is connected
-	* @param port: connected port object
+	* @param {Port} port: connected port object
 	* @this {BackgroundPort}
 	*/
 	onPortConnect(port) {
@@ -132,7 +132,7 @@ class BackgroundPort extends PortBase {
 	
 	/**
 	* @method onExternalPortConnect: external port is connected
-	* @param port: connected port object
+	* @param {Port} port: connected port object
 	* @this {BackgroundPort}
 	*/
 	onExternalPortConnect(port) {
@@ -198,7 +198,7 @@ class BackgroundPort extends PortBase {
 	
 	/**
 	* @method onPortDisconnect: port is disconnected
-	* @param port: disconnected port
+	* @param {Port} port: disconnected port
 	* @this {BackgroundPort}
 	*/
 	onPortDisconnect(port) {
